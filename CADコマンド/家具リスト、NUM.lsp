@@ -4,8 +4,17 @@
 ;;;   NUM  : click objects or blocks one by one to place sequential number tags
 ;;;          labels may have a letter prefix (X1, Y1, ...); start with e.g. X1
 ;;;          typing letters only (e.g. X) continues after the highest existing number of that prefix
-;;;   NUMX : export No, name, width, depth, height of numbered objects to CSV,
+;;;          same number on several objects = quantity: K (keep the number) or M (multi-select)
+;;;   NUMX : export No, name, width, depth, height, quantity to CSV,
+;;;          quantity = how many objects carry the same number;
+;;;          block sizes = block definition extents x |scale| (rotation cancelled); other objects = axis-aligned extents;
+;;;          a LINE of length *num-mark-len* (100) inside a block definition => depth reduced by *num-mark-sub* (50);
+;;;          block attributes win when filled in: name <- attribute for the product name, width/depth/height <- attributes
+;;;          (empty attribute => measured value);
 ;;;          one file per area (= letter prefix): <name>_<area>.csv
+;;;
+;;;   NUMA : add attribute definitions (floor, area, fixture No, name, height, quantity, category,
+;;;          notes) to existing blocks and synchronize them (ATTSYNC); edit *numa-tags* to change the items
 ;;;
 ;;;  - Number tag = plain TEXT (default) or circle block "NUM_TAG" (attribute NO);
 ;;;    switch with the T option of NUM
@@ -23,7 +32,9 @@
       *num-blk*    "NUM_TAG"     ; tag block name (only used by the BLOCK style)
       *num-lay*    "\U+30CA\U+30F3\U+30D0\U+30EA\U+30F3\U+30B0"  ; layer for number tags (existing layer is used as is)
       *num-tstyle* "ASA"         ; text style for TEXT tags (falls back to the current style)
-      *num-th*     400.0)        ; text height of TEXT tags
+      *num-th*     400.0         ; text height of TEXT tags
+      *num-mark-len* 100.0       ; a LINE of this length inside a block = depth marker
+      *num-mark-sub* 50.0)       ; depth is reduced by this much when such a LINE exists
 
 ;;; ---- Helper functions ------------------------------------------
 
@@ -33,6 +44,125 @@
   (if (not (vl-catch-all-error-p
              (vl-catch-all-apply 'vla-GetBoundingBox (list obj 'mn 'mx))))
     (list (vlax-safearray->list mn) (vlax-safearray->list mx))
+  )
+)
+
+;; Extents (min-pt max-pt) of a block DEFINITION in its own coordinates, attribute definitions excluded.
+;; Results are cached per block name in *num-bcache* (cleared at the start of each NUMX run).
+(defun num:blk-extents (blkname / hit def e mn mx lo hi ext)
+  (if (setq hit (assoc blkname *num-bcache*))
+    (cdr hit)
+    (progn
+      (setq def (vl-catch-all-apply
+                  'vla-Item
+                  (list (vla-get-Blocks (vla-get-ActiveDocument (vlax-get-acad-object)))
+                        blkname)))
+      (if (not (vl-catch-all-error-p def))
+        (vlax-for e def
+          (if (/= (vla-get-ObjectName e) "AcDbAttributeDefinition")
+            (if (not (vl-catch-all-error-p
+                       (vl-catch-all-apply 'vla-GetBoundingBox (list e 'mn 'mx))))
+              (progn
+                (setq lo (vlax-safearray->list mn)
+                      hi (vlax-safearray->list mx))
+                (setq ext (if ext
+                            (list (mapcar 'min (car ext) lo)
+                                  (mapcar 'max (cadr ext) hi))
+                            (list lo hi))))))))
+      (setq *num-bcache* (cons (cons blkname ext) *num-bcache*))
+      ext
+    )
+  )
+)
+
+;; T when the block definition contains a LINE whose length is *num-mark-len* (cached per block name)
+(defun num:blk-marker (blkname / hit def e found)
+  (if (setq hit (assoc blkname *num-mcache*))
+    (cdr hit)
+    (progn
+      (setq def (vl-catch-all-apply
+                  'vla-Item
+                  (list (vla-get-Blocks (vla-get-ActiveDocument (vlax-get-acad-object)))
+                        blkname)))
+      (if (not (vl-catch-all-error-p def))
+        (vlax-for e def
+          (if (and (not found)
+                   (= (vla-get-ObjectName e) "AcDbLine")
+                   (< (abs (- (vla-get-Length e) *num-mark-len*)) 0.01))
+            (setq found T))
+        )
+      )
+      (setq *num-mcache* (cons (cons blkname found) *num-mcache*))
+      found
+    )
+  )
+)
+
+;; (width depth height) of a block reference with the rotation cancelled:
+;; extents of the definition x |scale factors|.  nil if it cannot be measured.
+;; If the definition contains a LINE of length *num-mark-len*, the depth is reduced
+;; by *num-mark-sub* (once, however many such lines there are).
+(defun num:block-size (ent / obj nm ext w d h)
+  (setq obj (vlax-ename->vla-object ent))
+  ;; vla-get-Name = the actual (possibly anonymous *U..) definition, so dynamic blocks are handled
+  (setq nm (vla-get-Name obj))
+  (if (setq ext (num:blk-extents nm))
+    (progn
+      (setq w (* (abs (vla-get-XScaleFactor obj)) (- (car  (cadr ext)) (car  (car ext))))
+            d (* (abs (vla-get-YScaleFactor obj)) (- (cadr (cadr ext)) (cadr (car ext))))
+            h (* (abs (vla-get-ZScaleFactor obj)) (- (caddr (cadr ext)) (caddr (car ext)))))
+      (if (num:blk-marker nm)
+        (setq d (- d *num-mark-sub*)))
+      (list w d h)
+    )
+  )
+)
+
+;; Attribute values of a block reference as an alist ((TAG . text) ...), tags upper-cased (nil if none)
+(defun num:atts (obj / lst a)
+  (if (= (vla-get-HasAttributes obj) :vlax-true)
+    (foreach a (vlax-invoke obj 'GetAttributes)
+      (setq lst (cons (cons (strcase (vla-get-TagString a)) (vla-get-TextString a)) lst)))
+  )
+  lst
+)
+
+;; Trimmed text of the attribute with this tag, or nil when it is missing or empty
+(defun num:att-get (atts tag / v)
+  (if (setq v (cdr (assoc (strcase tag) atts)))
+    (progn
+      (setq v (vl-string-trim " " v))
+      (if (/= v "") v)
+    )
+  )
+)
+
+;; "1800" / " 1800 " / "1,800" / "1800mm" -> 1800.0 ; anything else -> nil
+(defun num:att-num (str / s i)
+  (setq s (vl-string-trim " " str))
+  ;; remove thousands separators
+  (while (setq i (vl-string-search "," s))
+    (setq s (strcat (if (> i 0) (substr s 1 i) "")
+                    (if (< (1+ i) (strlen s)) (substr s (+ i 2)) ""))))
+  (if (and (>= (strlen s) 2)
+           (= (strcase (substr s (1- (strlen s)))) "MM"))
+    (setq s (vl-string-trim " " (substr s 1 (- (strlen s) 2)))))
+  (if (/= s "") (distof s 2))
+)
+
+;; Text for one size column.  If any of the attribute tags has a value, that value is used
+;; (numbers are normalized, other text such as "-" is kept as typed); otherwise the measured
+;; value (or "-" when nothing could be measured).
+(defun num:size-text (atts tags measured / v n tg)
+  (foreach tg tags
+    (if (and (not v) (setq n (num:att-get atts tg)))
+      (setq v n)))
+  (cond
+    (v (if (setq n (num:att-num v))
+         (num:fmt n)
+         (vl-string-translate ",\"" "  " v)))
+    (measured (num:fmt measured))
+    (t "-")
   )
 )
 
@@ -247,7 +377,40 @@
 
 ;;; ---- NUM : place number tags ---------------------------------
 
-(defun c:NUM ( / *error* doc spc s0 s1 s2 txt done sel ent ed ok oldh bb pt tag h stack rec r)
+;; True when the entity is a number tag itself (tag layer, or the tag block)
+(defun num:tag-p (ed)
+  (or (= (strcase (cdr (assoc 8 ed))) (strcase *num-lay*))
+      (and (= (cdr (assoc 0 ed)) "INSERT")
+           (= (strcase (cdr (assoc 2 ed))) *num-blk*)))
+)
+
+;; Put a tag with the text txt on object ent (center of its extents) and record it on the object.
+;; oldh = handle of the previous tag when re-numbering (or nil).
+;; Returns (ent tag oldh), or nil on failure.
+(defun num:tag-object (ent spc txt oldh / bb pt tag h)
+  (cond
+    ((not (setq bb (num:bbox ent)))
+     (princ "\n\U+5BFE\U+8C61\U+306E\U+7BC4\U+56F2\U+3092\U+53D6\U+5F97\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")
+     nil)
+    (t
+     (setq pt (list (/ (+ (car (car bb)) (car (cadr bb))) 2.0)
+                    (/ (+ (cadr (car bb)) (cadr (cadr bb))) 2.0)
+                    0.0))
+     (setq tag (num:make-tag spc pt txt))
+     (cond
+       ((and tag
+             (setq h (cdr (assoc 5 (entget tag))))
+             (num:put-h ent h))
+        (list ent tag oldh))
+       (t
+        (if tag (entdel tag))
+        (princ "\n\U+3053\U+306E\U+5BFE\U+8C61\U+306B\U+306F\U+756A\U+53F7\U+3092\U+8A18\U+9332\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F(\U+753B\U+5C64\U+304C\U+30ED\U+30C3\U+30AF\U+3055\U+308C\U+3066\U+3044\U+307E\U+305B\U+3093\U+304B?)")
+        nil))
+    )
+  )
+)
+
+(defun c:NUM ( / *error* doc spc s0 s1 s2 done sel ent ed oldh item items ss i skipped r stack rec)
 
   (defun *error* (msg)
     (if doc (vl-catch-all-apply 'vla-EndUndoMark (list doc)))
@@ -265,6 +428,7 @@
   (or *num-style* (setq *num-style* "TEXT"))
   (or *num-r* (setq *num-r* 150.0))
   (or *num-th* (setq *num-th* 400.0))
+  (setq *num-hold* nil)
 
   (setq s0 (getstring (strcat "\n\U+958B\U+59CB\U+756A\U+53F7(\U+4F8B: X1 / \U+82F1\U+5B57\U+3060\U+3051\U+306A\U+3089\U+7D9A\U+304D\U+306E\U+756A\U+53F7) <" (num:label *num-next*) ">: ")))
   (if (and s0 (/= s0 "")) (num:set-label s0))
@@ -273,10 +437,11 @@
   (vla-StartUndoMark doc)
   (setq done nil stack nil)
   (while (not done)
-    (initget "Undo Size Number Type")
+    (initget "Undo Size Number Type Multi Keep")
     (setvar "ERRNO" 0)
     (setq sel (entsel (strcat "\n\U+756A\U+53F7 " (num:label *num-next*)
-                              " \U+3092\U+4ED8\U+3051\U+308B\U+5BFE\U+8C61\U+3092\U+9078\U+629E [\U+623B\U+3059(U)/\U+30B5\U+30A4\U+30BA(S)/\U+756A\U+53F7\U+5909\U+66F4(N)/\U+8868\U+793A\U+5F62\U+5F0F(T)] <\U+7D42\U+4E86>: ")))
+                              (if *num-hold* "(\U+56FA\U+5B9A\U+4E2D)" "")
+                              " \U+3092\U+4ED8\U+3051\U+308B\U+5BFE\U+8C61\U+3092\U+9078\U+629E [\U+623B\U+3059(U)/\U+8907\U+6570\U+9078\U+629E(M)/\U+540C\U+3058\U+756A\U+53F7\U+3092\U+7D9A\U+3051\U+308B(K)/\U+756A\U+53F7\U+5909\U+66F4(N)/\U+30B5\U+30A4\U+30BA(S)/\U+8868\U+793A\U+5F62\U+5F0F(T)] <\U+7D42\U+4E86>: ")))
     (cond
       ;; clicked on empty space
       ((and (null sel) (= (getvar "ERRNO") 7))
@@ -286,15 +451,17 @@
       ;; keyword options
       ((= (type sel) 'STR)
        (cond
+         ;; undo the last placement (a whole multi-selection counts as one)
          ((= sel "Undo")
           (if stack
             (progn
               (setq rec (car stack) stack (cdr stack))
-              (entdel (cadr rec))
-              (if (caddr rec)
-                (num:put-h (car rec) (caddr rec))
-                (num:clear-h (car rec)))
-              (setq *num-prefix* (nth 3 rec) *num-next* (nth 4 rec) *num-width* (nth 5 rec))
+              (foreach item (car rec)
+                (entdel (cadr item))
+                (if (caddr item)
+                  (num:put-h (car item) (caddr item))
+                  (num:clear-h (car item))))
+              (setq *num-prefix* (nth 1 rec) *num-next* (nth 2 rec) *num-width* (nth 3 rec))
               (princ "\n1\U+3064\U+623B\U+3057\U+307E\U+3057\U+305F\U+3002"))
             (princ "\n\U+623B\U+305B\U+308B\U+3082\U+306E\U+304C\U+3042\U+308A\U+307E\U+305B\U+3093\U+3002")))
          ((= sel "Size")
@@ -316,42 +483,68 @@
           (cond
             ((= s2 "Text") (setq *num-style* "TEXT"))
             ((= s2 "Block") (setq *num-style* "BLOCK"))))
+         ;; several objects at once, all get the same number (each object gets its own tag)
+         ((= sel "Multi")
+          (princ "\n\U+540C\U+3058\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B\U+5BFE\U+8C61\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044(\U+7A93\U+9078\U+629E\U+30FB\U+4EA4\U+5DEE\U+9078\U+629E\U+306A\U+3069)")
+          (if (setq ss (ssget))
+            (progn
+              (setq items nil skipped 0 i 0)
+              (repeat (sslength ss)
+                (setq ent (ssname ss i) i (1+ i))
+                (if (or (num:tag-p (entget ent))
+                        (num:tag-ename (num:get-h ent))
+                        (not (setq item (num:tag-object ent spc (num:label *num-next*) nil))))
+                  (setq skipped (1+ skipped))
+                  (setq items (cons item items))))
+              (if items
+                (progn
+                  (setq stack (cons (list items *num-prefix* *num-next* *num-width*) stack))
+                  (princ (strcat "\n" (num:label *num-next*) " \U+3092 " (itoa (length items)) " \U+500B\U+306B\U+4ED8\U+3051\U+307E\U+3057\U+305F"
+                                 (if (> skipped 0)
+                                   (strcat "(\U+30B9\U+30AD\U+30C3\U+30D7 " (itoa skipped) " \U+500B)")
+                                   "")))
+                  (if (not *num-hold*) (setq *num-next* (1+ *num-next*))))
+                (princ "\n\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+3089\U+308C\U+308B\U+5BFE\U+8C61\U+304C\U+3042\U+308A\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")))))
+         ;; keep using the same number for the following picks (toggle)
+         ((= sel "Keep")
+          (if *num-hold*
+            (progn
+              (setq *num-hold* nil)
+              ;; if the current label has been used, advance to the next number
+              (if (and stack
+                       (= (nth 1 (car stack)) *num-prefix*)
+                       (= (nth 2 (car stack)) *num-next*))
+                (setq *num-next* (1+ *num-next*)))
+              (princ (strcat "\n\U+56FA\U+5B9A\U+3092\U+89E3\U+9664\U+3057\U+307E\U+3057\U+305F\U+3002\U+6B21\U+306E\U+756A\U+53F7\U+306F " (num:label *num-next*) " \U+3067\U+3059\U+3002")))
+            (progn
+              (setq *num-hold* T)
+              ;; hold the label used last
+              (if stack
+                (setq *num-prefix* (nth 1 (car stack))
+                      *num-next*   (nth 2 (car stack))
+                      *num-width*  (nth 3 (car stack))))
+              (princ (strcat "\n\U+756A\U+53F7 " (num:label *num-next*)
+                             " \U+3092\U+56FA\U+5B9A\U+3057\U+307E\U+3057\U+305F\U+3002\U+3082\U+3046\U+4E00\U+5EA6 K \U+3067\U+89E3\U+9664\U+3059\U+308B\U+3068\U+6B21\U+306E\U+756A\U+53F7\U+306B\U+9032\U+307F\U+307E\U+3059\U+3002")))))
        ))
       ;; an object was picked
       (t
-       (setq ent (car sel) ed (entget ent) oldh nil ok T)
+       (setq ent (car sel) ed (entget ent) oldh nil)
        (cond
-         ;; number tags themselves (anything on the tag layer) are skipped
-         ((or (= (strcase (cdr (assoc 8 ed))) (strcase *num-lay*))
-              (and (= (cdr (assoc 0 ed)) "INSERT")
-                   (= (strcase (cdr (assoc 2 ed))) *num-blk*)))
-          (princ "\n\U+756A\U+53F7\U+30BF\U+30B0\U+81EA\U+4F53\U+306B\U+306F\U+4ED8\U+3051\U+3089\U+308C\U+307E\U+305B\U+3093\U+3002")
-          (setq ok nil))
-         ((num:tag-ename (num:get-h ent))
-          (initget "Yes No")
-          (if (= (getkword "\n\U+3059\U+3067\U+306B\U+756A\U+53F7\U+304C\U+4ED8\U+3044\U+3066\U+3044\U+307E\U+3059\U+3002\U+4ED8\U+3051\U+76F4\U+3057\U+307E\U+3059\U+304B? [\U+306F\U+3044(Y)/\U+3044\U+3044\U+3048(N)] <N>: ") "Yes")
-            (setq oldh (num:get-h ent))
-            (setq ok nil)))
-       )
-       (if ok
-         (if (setq bb (num:bbox ent))
-           (progn
-             ;; place the tag at the center of the object extents
-             (setq pt (list (/ (+ (car (car bb)) (car (cadr bb))) 2.0)
-                            (/ (+ (cadr (car bb)) (cadr (cadr bb))) 2.0)
-                            0.0))
-             (setq txt (num:label *num-next*)
-                   tag (num:make-tag spc pt txt))
-             (if (and tag
-                      (setq h (cdr (assoc 5 (entget tag))))
-                      (num:put-h ent h))
+         ;; number tags themselves are skipped
+         ((num:tag-p ed)
+          (princ "\n\U+756A\U+53F7\U+30BF\U+30B0\U+81EA\U+4F53\U+306B\U+306F\U+4ED8\U+3051\U+3089\U+308C\U+307E\U+305B\U+3093\U+3002"))
+         ;; already numbered: ask whether to re-number (N = leave as is)
+         ((and (num:tag-ename (num:get-h ent))
                (progn
-                 (setq stack (cons (list ent tag oldh *num-prefix* *num-next* *num-width*) stack))
-                 (setq *num-next* (1+ *num-next*)))
-               (progn
-                 (if tag (entdel tag))
-                 (princ "\n\U+3053\U+306E\U+5BFE\U+8C61\U+306B\U+306F\U+756A\U+53F7\U+3092\U+8A18\U+9332\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F(\U+753B\U+5C64\U+304C\U+30ED\U+30C3\U+30AF\U+3055\U+308C\U+3066\U+3044\U+307E\U+305B\U+3093\U+304B?)"))))
-           (princ "\n\U+5BFE\U+8C61\U+306E\U+7BC4\U+56F2\U+3092\U+53D6\U+5F97\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")))
+                 (initget "Yes No")
+                 (/= (getkword "\n\U+3059\U+3067\U+306B\U+756A\U+53F7\U+304C\U+4ED8\U+3044\U+3066\U+3044\U+307E\U+3059\U+3002\U+4ED8\U+3051\U+76F4\U+3057\U+307E\U+3059\U+304B? [\U+306F\U+3044(Y)/\U+3044\U+3044\U+3048(N)] <N>: ") "Yes")))
+          nil)
+         (t
+          (if (num:tag-ename (num:get-h ent)) (setq oldh (num:get-h ent)))
+          (if (setq item (num:tag-object ent spc (num:label *num-next*) oldh))
+            (progn
+              (setq stack (cons (list (list item) *num-prefix* *num-next* *num-width*) stack))
+              (if (not *num-hold*) (setq *num-next* (1+ *num-next*)))))))
       )
     )
   )
@@ -362,8 +555,10 @@
 
 ;;; ---- NUMX : export numbered objects to CSV ---------------------
 
-(defun c:NUMX ( / ss i ent ed tag typ name bb val pr rows path f prev dups r areas ar file cnt)
+(defun c:NUMX ( / ss i ent ed tag typ name bb sz val pr atts nm2 w d h rows merged m mixed path f r areas ar file kinds total)
 
+  (setq *num-bcache* nil *num-mcache* nil)
+  ;; collect one row per numbered object
   (setq ss (ssget "_X" (list (list -3 (list *num-app*)))))
   (if ss
     (progn
@@ -378,15 +573,26 @@
                          (vla-get-EffectiveName (vlax-ename->vla-object ent))
                          typ)
                   bb   (num:bbox ent)
+                  sz   (if (= typ "INSERT") (num:block-size ent))
                   val  (num:tag-value tag))
+            ;; sz = (width depth height).  Blocks: rotation cancelled (see num:block-size).
+            ;; Anything else (or if that fails): axis-aligned extents.
+            (if (and (not sz) bb)
+              (setq sz (list (- (car  (cadr bb)) (car  (car bb)))
+                             (- (cadr (cadr bb)) (cadr (car bb)))
+                             (- (caddr (cadr bb)) (caddr (car bb))))))
+            ;; attributes (blocks only): a filled-in value wins over the measured one
+            (setq atts (if (= typ "INSERT") (num:atts (vlax-ename->vla-object ent))))
+            (if (setq nm2 (num:att-get atts "\U+54C1\U+540D")) (setq name (vl-string-translate "\"" "'" nm2)))
+            (setq w (num:size-text atts '("\U+5E45") (if sz (car sz)))
+                  d (num:size-text atts '("\U+5965\U+884C" "\U+5965\U+884C\U+304D") (if sz (cadr sz)))
+                  h (num:size-text atts '("\U+9AD8\U+3055") (if sz (caddr sz))))
             (if (not val) (setq val ""))
             (setq pr (num:parse val))
             ;; row = (PREFIX NUMBER LABEL NAME WIDTH DEPTH HEIGHT)
             (setq rows
                   (cons (list (strcase (car pr)) (cadr pr) val name
-                              (if bb (num:fmt (- (car  (cadr bb)) (car  (car bb)))) "-")
-                              (if bb (num:fmt (- (cadr (cadr bb)) (cadr (car bb)))) "-")
-                              (if bb (num:fmt (- (caddr (cadr bb)) (caddr (car bb)))) "-"))
+                              w d h)
                         rows))
           )
         )
@@ -402,18 +608,26 @@
                          '(lambda (a b)
                             (or (< (car a) (car b))
                                 (and (= (car a) (car b)) (< (cadr a) (cadr b)))))))
-     ;; Check for duplicate numbers
-     (setq prev nil dups nil)
+     ;; merge objects that share the same number: quantity = how many objects carry it.
+     ;; size / name of the first object are used.  merged item = (COUNT PREFIX NUMBER LABEL NAME W D H)
+     (setq merged nil mixed nil)
      (foreach r rows
-       (if (and prev (= (car r) (car prev)) (= (cadr r) (cadr prev)))
-         (setq dups (cons (caddr r) dups)))
-       (setq prev r)
+       (setq m (car merged))
+       (cond
+         ((and m (= (car r) (cadr m)) (= (cadr r) (caddr m)))
+          (if (and (/= (cadddr r) (nth 4 m))
+                   (not (member (cadddr m) mixed)))
+            (setq mixed (cons (cadddr m) mixed)))
+          (setq merged (cons (cons (1+ (car m)) (cdr m)) (cdr merged))))
+         (t
+          (setq merged (cons (cons 1 r) merged))))
      )
-     (if dups
-       (princ (strcat "\n\U+6CE8\U+610F: \U+91CD\U+8907\U+3057\U+3066\U+3044\U+308B\U+756A\U+53F7\U+304C\U+3042\U+308A\U+307E\U+3059 \U+2192"
+     (setq rows (reverse merged))
+     (if mixed
+       (princ (strcat "\n\U+6CE8\U+610F: \U+540C\U+3058\U+756A\U+53F7\U+306A\U+306E\U+306B\U+540D\U+79F0(\U+30D6\U+30ED\U+30C3\U+30AF\U+540D\U+30FB\U+56F3\U+5F62\U+306E\U+7A2E\U+985E)\U+304C\U+9055\U+3046\U+5BFE\U+8C61\U+304C\U+3042\U+308A\U+307E\U+3059 \U+2192"
                       (apply 'strcat
                              (mapcar '(lambda (x) (strcat " " x))
-                                     (reverse dups))))))
+                                     (reverse mixed))))))
      ;; one CSV per area (= letter prefix): <name>_<area>.csv
      (setq path (getfiled "\U+4FDD\U+5B58\U+5148\U+3068\U+30D5\U+30A1\U+30A4\U+30EB\U+540D(\U+30A8\U+30EA\U+30A2\U+3054\U+3068\U+306B _\U+30A8\U+30EA\U+30A2\U+540D \U+304C\U+4ED8\U+3044\U+3066\U+4FDD\U+5B58\U+3055\U+308C\U+307E\U+3059)"
                           (strcat (getvar "DWGPREFIX")
@@ -424,30 +638,114 @@
        (progn
          (setq areas nil)
          (foreach r rows
-           (if (not (member (car r) areas))
-             (setq areas (append areas (list (car r))))))
+           (if (not (member (cadr r) areas))
+             (setq areas (append areas (list (cadr r))))))
          (foreach ar areas
            (setq file (strcat (vl-filename-directory path) "/"
                               (vl-filename-base path) "_"
                               (num:safe (if (= ar "") "\U+306A\U+3057" ar)) ".csv"))
            (if (setq f (open file "w"))
              (progn
-               (write-line "No,\U+540D\U+79F0,\U+5E45(mm),\U+5965\U+884C(mm),\U+9AD8\U+3055(mm)" f)
-               (setq cnt 0)
+               (write-line "No,\U+540D\U+79F0,\U+5E45(mm),\U+5965\U+884C(mm),\U+9AD8\U+3055(mm),\U+500B\U+6570" f)
+               (setq kinds 0 total 0)
                (foreach r rows
-                 (if (= (car r) ar)
+                 (if (= (cadr r) ar)
                    (progn
-                     (write-line (strcat (caddr r) ",\"" (cadddr r) "\","
-                                         (nth 4 r) "," (nth 5 r) "," (nth 6 r))
+                     (write-line (strcat (cadddr r) ",\"" (nth 4 r) "\","
+                                         (nth 5 r) "," (nth 6 r) "," (nth 7 r) ","
+                                         (itoa (car r)))
                                  f)
-                     (setq cnt (1+ cnt)))))
+                     (setq kinds (1+ kinds) total (+ total (car r))))))
                (close f)
-               (princ (strcat "\n" (if (= ar "") "\U+306A\U+3057" ar) ": " (itoa cnt) " \U+4EF6 \U+2192 " file)))
+               (princ (strcat "\n" (if (= ar "") "\U+306A\U+3057" ar) ": "
+                              (itoa kinds) " \U+7A2E\U+985E / \U+500B\U+6570 " (itoa total) " \U+2192 " file)))
              (princ (strcat "\n\U+30D5\U+30A1\U+30A4\U+30EB\U+3092\U+958B\U+3051\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F(Excel\U+3067\U+958B\U+3044\U+3066\U+3044\U+307E\U+305B\U+3093\U+304B?): " file))))))
     )
   )
   (princ)
 )
 
-(princ "\nNUM(\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B) / NUMX(CSV\U+66F8\U+304D\U+51FA\U+3057) \U+3092\U+8AAD\U+307F\U+8FBC\U+307F\U+307E\U+3057\U+305F\U+3002")
+;;; ---- NUMA : add the standard attribute definitions to existing blocks ----
+
+;; Attribute tags to add (edit this list to change the items).
+;; Each becomes an invisible, preset attribute (not asked when the block is inserted).
+(setq *numa-tags* '("\U+968E\U+6570" "\U+30A8\U+30EA\U+30A2" "\U+4EC0\U+5668No" "\U+54C1\U+540D" "\U+5E45" "\U+5965\U+884C" "\U+9AD8\U+3055" "\U+6570\U+91CF" "\U+4EC0\U+5668\U+5206\U+985E" "\U+5099\U+8003"))
+
+(defun c:NUMA ( / *error* doc oldecho ss i obj nm names def have e tag k a added tot nblk)
+
+  (defun *error* (msg)
+    (if oldecho (setvar "CMDECHO" oldecho))
+    (if doc (vl-catch-all-apply 'vla-EndUndoMark (list doc)))
+    (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
+      (princ (strcat "\n\U+30A8\U+30E9\U+30FC: " msg))
+    )
+    (princ)
+  )
+
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+  (princ "\n\U+5C5E\U+6027\U+3092\U+8FFD\U+52A0\U+3059\U+308B\U+30D6\U+30ED\U+30C3\U+30AF\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044")
+  (if (setq ss (ssget '((0 . "INSERT"))))
+    (progn
+      ;; unique block names (dynamic blocks: the base block name)
+      (setq i 0 names nil)
+      (repeat (sslength ss)
+        (setq obj (vlax-ename->vla-object (ssname ss i)) i (1+ i))
+        (setq nm (vla-get-EffectiveName obj))
+        (if (and (/= (strcase nm) *num-blk*)
+                 (not (member nm names)))
+          (setq names (cons nm names)))
+      )
+      (setq names (reverse names) tot 0 nblk 0)
+      (setq oldecho (getvar "CMDECHO"))
+      (setvar "CMDECHO" 0)
+      (vla-StartUndoMark doc)
+      (foreach nm names
+        (setq def (vla-Item (vla-get-Blocks doc) nm))
+        (if (= (vla-get-IsXRef def) :vlax-true)
+          (princ (strcat "\n" nm ": \U+5916\U+90E8\U+53C2\U+7167\U+306E\U+305F\U+3081\U+30B9\U+30AD\U+30C3\U+30D7\U+3057\U+307E\U+3057\U+305F"))
+          (progn
+            ;; tags already defined in this block
+            (setq have nil)
+            (vlax-for e def
+              (if (= (vla-get-ObjectName e) "AcDbAttributeDefinition")
+                (setq have (cons (strcase (vla-get-TagString e)) have)))
+            )
+            (setq added 0 k 0)
+            (foreach tag *numa-tags*
+              (if (not (member (strcase tag) have))
+                (progn
+                  ;; height 2.5, mode 9 = invisible + preset; stacked below the base point
+                  (setq a (vl-catch-all-apply
+                            'vla-AddAttribute
+                            (list def 2.5 9 tag
+                                  (vlax-3d-point (list 0.0 (* -4.0 k) 0.0))
+                                  tag "")))
+                  (if (vl-catch-all-error-p a)
+                    (princ (strcat "\n" nm ": \U+300C" tag "\U+300D\U+3092\U+8FFD\U+52A0\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F"))
+                    (progn
+                      (vla-put-Layer a "0")
+                      (setq added (1+ added) k (1+ k))))
+                )
+              )
+            )
+            (if (> added 0)
+              (progn
+                ;; push the new definitions to the block references already in the drawing
+                (command "_.ATTSYNC" "_N" nm)
+                (setq tot (+ tot added) nblk (1+ nblk))
+                (princ (strcat "\n" nm ": " (itoa added) " \U+9805\U+76EE\U+3092\U+8FFD\U+52A0\U+3057\U+3066\U+53CD\U+6620\U+3057\U+307E\U+3057\U+305F")))
+              (princ (strcat "\n" nm ": \U+3059\U+3079\U+3066\U+8FFD\U+52A0\U+6E08\U+307F\U+3067\U+3059")))
+          )
+        )
+      )
+      (vla-EndUndoMark doc)
+      (setvar "CMDECHO" oldecho)
+      (princ (strcat "\n\U+5B8C\U+4E86: " (itoa nblk) " \U+7A2E\U+985E\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+3001\U+5408\U+8A08 " (itoa tot) " \U+9805\U+76EE\U+3092\U+8FFD\U+52A0\U+3057\U+307E\U+3057\U+305F\U+3002"))
+    )
+    (princ "\n\U+30D6\U+30ED\U+30C3\U+30AF\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")
+  )
+  (princ)
+)
+
+(princ "\nNUM(\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B) / NUMX(\U+500B\U+6570\U+3064\U+304DCSV\U+66F8\U+304D\U+51FA\U+3057) / NUMA(\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+5C5E\U+6027\U+3092\U+8FFD\U+52A0) \U+3092\U+8AAD\U+307F\U+8FBC\U+307F\U+307E\U+3057\U+305F\U+3002")
 (princ)
