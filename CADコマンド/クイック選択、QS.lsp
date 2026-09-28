@@ -1,10 +1,23 @@
 ;;; ============================================================
-;;;  QS - クイック選択拡張 (v5: コマンド名変更・日本語表示・配色改善)
+;;;  QS - クイック選択拡張 (v8: UI拡大・文字サイズ12・単一項目の表示不具合修正)
 ;;;
 ;;;  必要なファイルは QS.lsp 1本だけです。コマンド名は "QS" です。
 ;;;  PowerShell(WPF)のダイアログ用スクリプトはこのファイルの中に
 ;;;  文字列として埋め込まれており、実行のたびに一時フォルダへ
 ;;;  自動的に書き出されます(qse-write-ps1-script関数)。
+;;;
+;;;  v8での変更点:
+;;;   ・ダイアログのウィンドウを大きく(幅1000→1200、一覧の高さ108→150 など)し、
+;;;     UIの文字サイズは12に統一し、左右の項目欄の間隔も広げた(16→32)。
+;;;     検索欄は上下の余白を詰めて低くした。
+;;;   ・「検索範囲」は前回選んだ値で起動する。値はAutoCAD環境変数
+;;;     (getenv/setenv の QS_LastRange)に保存するので、図面を替えたり
+;;;     AutoCADを再起動しても引き継がれる。適用(OK)したときだけ更新される。
+;;;     小さい画面ではみ出さないよう、
+;;;     作業領域に合わせて幅・高さの上限を自動調整
+;;;   ・ブロック名/文字列内容が1種類だけのとき、先頭1文字しか表示
+;;;     されない不具合を修正(PowerShell側Get-Sectionの戻り値が1要素だと
+;;;     文字列に展開されてしまうため、カンマ演算子で包んでリストのまま返す)
 ;;;
 ;;;  v5での変更点:
 ;;;   ・コマンド名を QSE → QS に変更
@@ -122,8 +135,11 @@
   (write-line "" fn)
   (write-line "function Get-Section {" fn)
   (write-line "    param($Data, [string]$Key)" fn)
-  (write-line "    if ($Data.ContainsKey($Key)) { return $Data[$Key] }" fn)
-  (write-line "    return New-Object System.Collections.Generic.List[string]" fn)
+  (write-line "    # 戻り値はカンマ演算子で包む。包まないと、要素が1個のときPowerShellが" fn)
+  (write-line "    # リストを展開して単なる文字列として返してしまい、呼び出し側の" fn)
+  (write-line "    # $list[0] が「先頭1文字」になってしまう(要素0個のときも同様に消える)" fn)
+  (write-line "    if ($Data.ContainsKey($Key)) { return ,$Data[$Key] }" fn)
+  (write-line "    return ,(New-Object System.Collections.Generic.List[string])" fn)
   (write-line "}" fn)
   (write-line "" fn)
   (write-line "function Write-ResultFile {" fn)
@@ -211,8 +227,8 @@
   (write-line "<Window" fn)
   (write-line "    xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"" fn)
   (write-line "    xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"" fn)
-  (write-line "    Title=\"QS\" Width=\"1000\"" fn)
-  (write-line "    SizeToContent=\"Height\" MaxHeight=\"900\"" fn)
+  (write-line "    Title=\"QS\" Width=\"1200\"" fn)
+  (write-line "    SizeToContent=\"Height\" MaxHeight=\"1000\"" fn)
   (write-line "    WindowStartupLocation=\"CenterScreen\"" fn)
   (write-line "    WindowStyle=\"None\"" fn)
   (write-line "    AllowsTransparency=\"True\"" fn)
@@ -223,8 +239,8 @@
   (write-line "            <Setter Property=\"Background\" Value=\"#1F5FA8\"/>" fn)
   (write-line "            <Setter Property=\"Foreground\" Value=\"White\"/>" fn)
   (write-line "            <Setter Property=\"FontWeight\" Value=\"Bold\"/>" fn)
-  (write-line "            <Setter Property=\"FontSize\" Value=\"13\"/>" fn)
-  (write-line "            <Setter Property=\"Padding\" Value=\"20,9\"/>" fn)
+  (write-line "            <Setter Property=\"FontSize\" Value=\"12\"/>" fn)
+  (write-line "            <Setter Property=\"Padding\" Value=\"26,11\"/>" fn)
   (write-line "            <Setter Property=\"BorderThickness\" Value=\"0\"/>" fn)
   (write-line "            <Setter Property=\"Cursor\" Value=\"Hand\"/>" fn)
   (write-line "            <Setter Property=\"Template\">" fn)
@@ -246,8 +262,8 @@
   (write-line "        <Style x:Key=\"SecondaryButton\" TargetType=\"Button\">" fn)
   (write-line "            <Setter Property=\"Background\" Value=\"White\"/>" fn)
   (write-line "            <Setter Property=\"Foreground\" Value=\"#333333\"/>" fn)
-  (write-line "            <Setter Property=\"FontSize\" Value=\"13\"/>" fn)
-  (write-line "            <Setter Property=\"Padding\" Value=\"20,9\"/>" fn)
+  (write-line "            <Setter Property=\"FontSize\" Value=\"12\"/>" fn)
+  (write-line "            <Setter Property=\"Padding\" Value=\"26,11\"/>" fn)
   (write-line "            <Setter Property=\"BorderBrush\" Value=\"#CCCCCC\"/>" fn)
   (write-line "            <Setter Property=\"BorderThickness\" Value=\"1\"/>" fn)
   (write-line "            <Setter Property=\"Cursor\" Value=\"Hand\"/>" fn)
@@ -291,12 +307,12 @@
   (write-line "        </Style>" fn)
   (write-line "" fn)
   (write-line "        <Style x:Key=\"MiniLink\" TargetType=\"Button\" BasedOn=\"{StaticResource LinkButton}\">" fn)
-  (write-line "            <Setter Property=\"FontSize\" Value=\"11\"/>" fn)
-  (write-line "            <Setter Property=\"Margin\" Value=\"10,0,0,0\"/>" fn)
+  (write-line "            <Setter Property=\"FontSize\" Value=\"12\"/>" fn)
+  (write-line "            <Setter Property=\"Margin\" Value=\"14,0,0,0\"/>" fn)
   (write-line "        </Style>" fn)
   (write-line "" fn)
   (write-line "        <Style x:Key=\"SearchBox\" TargetType=\"TextBox\">" fn)
-  (write-line "            <Setter Property=\"Padding\" Value=\"8,5\"/>" fn)
+  (write-line "            <Setter Property=\"Padding\" Value=\"8,4\"/>" fn)
   (write-line "            <Setter Property=\"FontSize\" Value=\"12\"/>" fn)
   (write-line "            <Setter Property=\"Template\">" fn)
   (write-line "                <Setter.Value>" fn)
@@ -320,6 +336,10 @@
   (write-line "            <Setter Property=\"Background\" Value=\"#FCFCFC\"/>" fn)
   (write-line "            <Setter Property=\"FontSize\" Value=\"12\"/>" fn)
   (write-line "        </Style>" fn)
+  (write-line "" fn)
+  (write-line "        <Style TargetType=\"ListBoxItem\">" fn)
+  (write-line "            <Setter Property=\"Padding\" Value=\"6,4\"/>" fn)
+  (write-line "        </Style>" fn)
   (write-line "    </Window.Resources>" fn)
   (write-line "" fn)
   (write-line "    <Border Background=\"White\" CornerRadius=\"10\" BorderBrush=\"#DDDDDD\" BorderThickness=\"1\">" fn)
@@ -328,7 +348,7 @@
   (write-line "        </Border.Effect>" fn)
   (write-line "        <Grid>" fn)
   (write-line "            <Grid.RowDefinitions>" fn)
-  (write-line "                <RowDefinition Height=\"48\"/>" fn)
+  (write-line "                <RowDefinition Height=\"56\"/>" fn)
   (write-line "                <RowDefinition Height=\"*\"/>" fn)
   (write-line "            </Grid.RowDefinitions>" fn)
   (write-line "" fn)
@@ -341,9 +361,9 @@
   (write-line "                    </Grid.ColumnDefinitions>" fn)
   (write-line "                    <TextBlock Grid.Column=\"0\" Text=\"&#9660;\" Foreground=\"#2F6FBD\" FontSize=\"16\"" fn)
   (write-line "                               VerticalAlignment=\"Center\" Margin=\"16,0,8,0\"/>" fn)
-  (write-line "                    <TextBlock Grid.Column=\"1\" Text=\"クイック選択 - 条件設定\" FontSize=\"14\" FontWeight=\"Bold\"" fn)
+  (write-line "                    <TextBlock Grid.Column=\"1\" Text=\"クイック選択 - 条件設定\" FontSize=\"12\" FontWeight=\"Bold\"" fn)
   (write-line "                               Foreground=\"#2B2B2B\" VerticalAlignment=\"Center\"/>" fn)
-  (write-line "                    <Button x:Name=\"BtnClose\" Grid.Column=\"2\" Content=\"&#10005;\" Width=\"44\" Height=\"48\"" fn)
+  (write-line "                    <Button x:Name=\"BtnClose\" Grid.Column=\"2\" Content=\"&#10005;\" Width=\"52\" Height=\"56\"" fn)
   (write-line "                            Background=\"Transparent\" BorderThickness=\"0\" Foreground=\"#555555\" FontSize=\"14\"" fn)
   (write-line "                            Cursor=\"Hand\"/>" fn)
   (write-line "                </Grid>" fn)
@@ -360,11 +380,11 @@
   (write-line "                <TextBlock Grid.Row=\"0\" Text=\"絞り込む項目を選択してください（Ctrl+クリックで複数選択可）\"" fn)
   (write-line "                           Foreground=\"#666666\" FontSize=\"12\" Margin=\"0,0,0,12\"/>" fn)
   (write-line "" fn)
-  (write-line "                <ScrollViewer Grid.Row=\"1\" Height=\"460\" VerticalScrollBarVisibility=\"Auto\" HorizontalScrollBarVisibility=\"Disabled\">" fn)
+  (write-line "                <ScrollViewer x:Name=\"MainScroll\" Grid.Row=\"1\" Height=\"600\" VerticalScrollBarVisibility=\"Auto\" HorizontalScrollBarVisibility=\"Disabled\">" fn)
   (write-line "                    <Grid Margin=\"0,0,10,0\">" fn)
   (write-line "                        <Grid.ColumnDefinitions>" fn)
   (write-line "                            <ColumnDefinition Width=\"*\"/>" fn)
-  (write-line "                            <ColumnDefinition Width=\"16\"/>" fn)
+  (write-line "                            <ColumnDefinition Width=\"32\"/>" fn)
   (write-line "                            <ColumnDefinition Width=\"*\"/>" fn)
   (write-line "                        </Grid.ColumnDefinitions>" fn)
   (write-line "                        <StackPanel Grid.Column=\"0\" x:Name=\"ColLeft\"/>" fn)
@@ -372,7 +392,7 @@
   (write-line "                    </Grid>" fn)
   (write-line "                </ScrollViewer>" fn)
   (write-line "" fn)
-  (write-line "                <Border Grid.Row=\"2\" Margin=\"0,4,0,0\" Padding=\"14,10\" Background=\"#F7F7F7\" CornerRadius=\"8\"" fn)
+  (write-line "                <Border Grid.Row=\"2\" Margin=\"0,4,0,0\" Padding=\"16,12\" Background=\"#F7F7F7\" CornerRadius=\"8\"" fn)
   (write-line "                        BorderBrush=\"#E4E4E4\" BorderThickness=\"1\">" fn)
   (write-line "                    <StackPanel Orientation=\"Horizontal\">" fn)
   (write-line "                        <TextBlock Text=\"検索範囲:\" VerticalAlignment=\"Center\" Margin=\"0,0,16,0\"" fn)
@@ -412,6 +432,13 @@
   (write-line "    $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)" fn)
   (write-line "    $window = [System.Windows.Markup.XamlReader]::Load($reader)" fn)
   (write-line "" fn)
+  (write-line "    # 画面(作業領域)が小さい環境でもはみ出さないよう、幅・高さに上限を設ける" fn)
+  (write-line "    $mainScroll = $window.FindName(\"MainScroll\")" fn)
+  (write-line "    $wa = [System.Windows.SystemParameters]::WorkArea" fn)
+  (write-line "    $window.Width     = [Math]::Min(1200, $wa.Width - 40)" fn)
+  (write-line "    $window.MaxHeight = [Math]::Max(500, $wa.Height - 20)" fn)
+  (write-line "    $mainScroll.Height = [Math]::Max(320, [Math]::Min(600, $wa.Height - 280))" fn)
+  (write-line "" fn)
   (write-line "    $colLeft    = $window.FindName(\"ColLeft\")" fn)
   (write-line "    $colRight   = $window.FindName(\"ColRight\")" fn)
   (write-line "    $headerBar  = $window.FindName(\"HeaderBar\")" fn)
@@ -423,6 +450,16 @@
   (write-line "    $radioWindow= $window.FindName(\"RadioWindow\")" fn)
   (write-line "    $radioPolygon = $window.FindName(\"RadioPolygon\")" fn)
   (write-line "    $radioAll   = $window.FindName(\"RadioAll\")" fn)
+  (write-line "" fn)
+  (write-line "    # 検索範囲は前回値で初期化する(LISP側が入力ファイルのRANGEセクションで渡す)" fn)
+  (write-line "    $rangeInit = 'all'" fn)
+  (write-line "    $rangeSec = Get-Section $data 'RANGE'" fn)
+  (write-line "    if ($rangeSec.Count -gt 0) { $rangeInit = [string]$rangeSec[0] }" fn)
+  (write-line "    switch ($rangeInit) {" fn)
+  (write-line "        'window'  { $radioWindow.IsChecked  = $true }" fn)
+  (write-line "        'polygon' { $radioPolygon.IsChecked = $true }" fn)
+  (write-line "        default   { $radioAll.IsChecked     = $true }" fn)
+  (write-line "    }" fn)
   (write-line "" fn)
   (write-line "    $headerBar.Add_MouseLeftButtonDown({ $window.DragMove() })" fn)
   (write-line "" fn)
@@ -444,8 +481,8 @@
   (write-line "        $card.BorderBrush = $AccentColor" fn)
   (write-line "        $card.BorderThickness = 1.5" fn)
   (write-line "        $card.CornerRadius = 8" fn)
-  (write-line "        $card.Padding = 12" fn)
-  (write-line "        $card.Margin = \"0,0,0,12\"" fn)
+  (write-line "        $card.Padding = 14" fn)
+  (write-line "        $card.Margin = \"0,0,0,14\"" fn)
   (write-line "" fn)
   (write-line "        $stack = New-Object System.Windows.Controls.StackPanel" fn)
   (write-line "        $card.Child = $stack" fn)
@@ -478,7 +515,7 @@
   (write-line "        $countText = New-Object System.Windows.Controls.TextBlock" fn)
   (write-line "        $countText.Text = \"(\" + $Values.Count + \"件)\"" fn)
   (write-line "        $countText.Foreground = \"#999999\"" fn)
-  (write-line "        $countText.FontSize = 11" fn)
+  (write-line "        $countText.FontSize = 12" fn)
   (write-line "        $countText.Margin = \"6,0,0,0\"" fn)
   (write-line "        $countText.VerticalAlignment = \"Center\"" fn)
   (write-line "" fn)
@@ -510,7 +547,7 @@
   (write-line "" fn)
   (write-line "        $listBox = New-Object System.Windows.Controls.ListBox" fn)
   (write-line "        $listBox.SelectionMode = \"Extended\"" fn)
-  (write-line "        $listBox.Height = 108" fn)
+  (write-line "        $listBox.Height = 150" fn)
   (write-line "        $listBox.Margin = \"0,8,0,0\"" fn)
   (write-line "        for ($idx = 0; $idx -lt $Values.Count; $idx++) {" fn)
   (write-line "            $lbi = New-Object System.Windows.Controls.ListBoxItem" fn)
@@ -526,11 +563,11 @@
   (write-line "        $listBox.Tag = \"collapsed\"" fn)
   (write-line "        $headerClick.Add_MouseLeftButtonDown({" fn)
   (write-line "            if ($listBox.Tag -eq \"expanded\") {" fn)
-  (write-line "                $listBox.Height = 108" fn)
+  (write-line "                $listBox.Height = 150" fn)
   (write-line "                $titleText.Text = \"[+] \" + $Title" fn)
   (write-line "                $listBox.Tag = \"collapsed\"" fn)
   (write-line "            } else {" fn)
-  (write-line "                $listBox.Height = 280" fn)
+  (write-line "                $listBox.Height = 380" fn)
   (write-line "                $titleText.Text = \"[-] \" + $Title" fn)
   (write-line "                $listBox.Tag = \"expanded\"" fn)
   (write-line "            }" fn)
@@ -814,7 +851,7 @@
                    inFile outFile ps1File fn result
                    selTypes selLayers selColors selLtypes selBlks selTxts
                    selRange selResult errMsg
-                   filterList ssFilter polyPts )
+                   filterList ssFilter polyPts lastRange )
   (vl-load-com)
 
   ;; ---------- 1. 基準オブジェクトの選択 ----------
@@ -921,6 +958,12 @@
       (setq outFile (vl-filename-mktemp "qse_out.txt"))
       (setq ps1File (vl-filename-mktemp "qse_ui.ps1"))
 
+      ;; 検索範囲の前回値を取得する(未設定・不正な値のときは "all")
+      (setq lastRange (getenv "QS_LastRange"))
+      (if (not (member lastRange '("window" "polygon" "all")))
+        (setq lastRange "all")
+      )
+
       (setq fn (open inFile "w"))
       (qse-write-section fn "TYPE"
         (mapcar '(lambda (v) (strcat v "|" (qse-type-label v))) typeList)
@@ -932,6 +975,7 @@
       (if blkList (qse-write-section fn "BLOCKCOUNT" blkCountList))
       (if txtList (qse-write-section fn "TEXT"  txtList))
       (if txtList (qse-write-section fn "TEXTCOUNT" txtCountList))
+      (qse-write-section fn "RANGE" (list lastRange))
       (close fn)
 
       ;; 埋め込みPowerShellスクリプトを一時ファイルへ書き出す
@@ -964,6 +1008,11 @@
              (princ "\n処理をキャンセルしました。")
             )
             (T
+             ;; 検索範囲を保存する(次回起動時の初期値になる)
+             (if (member selRange '("window" "polygon" "all"))
+               (setenv "QS_LastRange" selRange)
+             )
+
              ;; ---------- 5. ssgetフィルタの構築 ----------
              (setq filterList '())
              (if selTypes  (setq filterList (append filterList (qse-make-subfilter 0 selTypes))))
@@ -1019,5 +1068,5 @@
   )
   (princ)
 )
-(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v7:閉じたポリライン内選択対応)")
+(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v8:UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
 (princ)
