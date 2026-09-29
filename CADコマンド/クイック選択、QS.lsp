@@ -1,5 +1,5 @@
 ;;; ============================================================
-;;;  QS - クイック選択拡張 (v8: UI拡大・文字サイズ12・単一項目の表示不具合修正)
+;;;  QS - クイック選択拡張 (v8: 右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
 ;;;
 ;;;  必要なファイルは QS.lsp 1本だけです。コマンド名は "QS" です。
 ;;;  PowerShell(WPF)のダイアログ用スクリプトはこのファイルの中に
@@ -13,6 +13,9 @@
 ;;;   ・「検索範囲」は前回選んだ値で起動する。値はAutoCAD環境変数
 ;;;     (getenv/setenv の QS_LastRange)に保存するので、図面を替えたり
 ;;;     AutoCADを再起動しても引き継がれる。適用(OK)したときだけ更新される。
+;;;   ・ダイアログ内(検索欄を除く)を右クリックすると、「適用」ボタンを
+;;;     押したのと同じ扱いになる。検索欄の上で右クリックした場合は、
+;;;     従来通り右クリックメニュー(コピー/貼り付け)を優先する。
 ;;;     小さい画面ではみ出さないよう、
 ;;;     作業領域に合わせて幅・高さの上限を自動調整
 ;;;   ・ブロック名/文字列内容が1種類だけのとき、先頭1文字しか表示
@@ -663,6 +666,24 @@
   (write-line "" fn)
   (write-line "    $btnApply.Add_Click({ Save-Result \"OK\"; $window.Close() })" fn)
   (write-line "    $btnCancel.Add_Click({ Save-Result \"CANCEL\"; $window.Close() })" fn)
+  (write-line "" fn)
+  (write-line "    # 検索欄(TextBox)の上以外を右クリックしたときは「適用」を押したのと同じ扱いにする。" fn)
+  (write-line "    # 検索欄の上では、従来通りの右クリックメニュー(コピー/貼り付け)を優先する。" fn)
+  (write-line "    function Test-InsideTextBox($obj) {" fn)
+  (write-line "        $cur = $obj" fn)
+  (write-line "        while ($cur -ne $null) {" fn)
+  (write-line "            if ($cur -is [System.Windows.Controls.TextBox]) { return $true }" fn)
+  (write-line "            $cur = [System.Windows.Media.VisualTreeHelper]::GetParent($cur)" fn)
+  (write-line "        }" fn)
+  (write-line "        return $false" fn)
+  (write-line "    }" fn)
+  (write-line "    $window.Add_PreviewMouseRightButtonUp({" fn)
+  (write-line "        param($s, $e)" fn)
+  (write-line "        if (Test-InsideTextBox $e.OriginalSource) { return }" fn)
+  (write-line "        $e.Handled = $true" fn)
+  (write-line "        Save-Result \"OK\"" fn)
+  (write-line "        $window.Close()" fn)
+  (write-line "    })" fn)
   (write-line "    $btnClose.Add_Click({ Save-Result \"CANCEL\"; $window.Close() })" fn)
   (write-line "" fn)
   (write-line "    $btnReset.Add_Click({" fn)
@@ -1068,5 +1089,5 @@
   )
   (princ)
 )
-(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v8:UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
+(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v8:右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
 (princ)
