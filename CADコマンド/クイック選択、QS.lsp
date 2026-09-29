@@ -1,5 +1,5 @@
 ;;; ============================================================
-;;;  QS - クイック選択拡張 (v8: 右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
+;;;  QS - クイック選択拡張 (v8: フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
 ;;;
 ;;;  必要なファイルは QS.lsp 1本だけです。コマンド名は "QS" です。
 ;;;  PowerShell(WPF)のダイアログ用スクリプトはこのファイルの中に
@@ -16,6 +16,9 @@
 ;;;   ・ダイアログ内(検索欄を除く)を右クリックすると、「適用」ボタンを
 ;;;     押したのと同じ扱いになる。検索欄の上で右クリックした場合は、
 ;;;     従来通り右クリックメニュー(コピー/貼り付け)を優先する。
+;;;   ・タイトルバー(▼アイコンとタイトル文字の部分)の高さ・アイコンの
+;;;     大きさを縮小(高さ56→40、▼アイコン16→13、閉じるボタン52x56→40x40)
+;;;   ・フッター(検索範囲欄・下部ボタン)の余白を詰めて全体を縮小
 ;;;     小さい画面ではみ出さないよう、
 ;;;     作業領域に合わせて幅・高さの上限を自動調整
 ;;;   ・ブロック名/文字列内容が1種類だけのとき、先頭1文字しか表示
@@ -243,7 +246,7 @@
   (write-line "            <Setter Property=\"Foreground\" Value=\"White\"/>" fn)
   (write-line "            <Setter Property=\"FontWeight\" Value=\"Bold\"/>" fn)
   (write-line "            <Setter Property=\"FontSize\" Value=\"12\"/>" fn)
-  (write-line "            <Setter Property=\"Padding\" Value=\"26,11\"/>" fn)
+  (write-line "            <Setter Property=\"Padding\" Value=\"18,8\"/>" fn)
   (write-line "            <Setter Property=\"BorderThickness\" Value=\"0\"/>" fn)
   (write-line "            <Setter Property=\"Cursor\" Value=\"Hand\"/>" fn)
   (write-line "            <Setter Property=\"Template\">" fn)
@@ -266,7 +269,7 @@
   (write-line "            <Setter Property=\"Background\" Value=\"White\"/>" fn)
   (write-line "            <Setter Property=\"Foreground\" Value=\"#333333\"/>" fn)
   (write-line "            <Setter Property=\"FontSize\" Value=\"12\"/>" fn)
-  (write-line "            <Setter Property=\"Padding\" Value=\"26,11\"/>" fn)
+  (write-line "            <Setter Property=\"Padding\" Value=\"18,8\"/>" fn)
   (write-line "            <Setter Property=\"BorderBrush\" Value=\"#CCCCCC\"/>" fn)
   (write-line "            <Setter Property=\"BorderThickness\" Value=\"1\"/>" fn)
   (write-line "            <Setter Property=\"Cursor\" Value=\"Hand\"/>" fn)
@@ -351,7 +354,7 @@
   (write-line "        </Border.Effect>" fn)
   (write-line "        <Grid>" fn)
   (write-line "            <Grid.RowDefinitions>" fn)
-  (write-line "                <RowDefinition Height=\"56\"/>" fn)
+  (write-line "                <RowDefinition Height=\"40\"/>" fn)
   (write-line "                <RowDefinition Height=\"*\"/>" fn)
   (write-line "            </Grid.RowDefinitions>" fn)
   (write-line "" fn)
@@ -362,11 +365,11 @@
   (write-line "                        <ColumnDefinition Width=\"*\"/>" fn)
   (write-line "                        <ColumnDefinition Width=\"Auto\"/>" fn)
   (write-line "                    </Grid.ColumnDefinitions>" fn)
-  (write-line "                    <TextBlock Grid.Column=\"0\" Text=\"&#9660;\" Foreground=\"#2F6FBD\" FontSize=\"16\"" fn)
-  (write-line "                               VerticalAlignment=\"Center\" Margin=\"16,0,8,0\"/>" fn)
+  (write-line "                    <TextBlock Grid.Column=\"0\" Text=\"&#9660;\" Foreground=\"#2F6FBD\" FontSize=\"13\"" fn)
+  (write-line "                               VerticalAlignment=\"Center\" Margin=\"12,0,6,0\"/>" fn)
   (write-line "                    <TextBlock Grid.Column=\"1\" Text=\"クイック選択 - 条件設定\" FontSize=\"12\" FontWeight=\"Bold\"" fn)
   (write-line "                               Foreground=\"#2B2B2B\" VerticalAlignment=\"Center\"/>" fn)
-  (write-line "                    <Button x:Name=\"BtnClose\" Grid.Column=\"2\" Content=\"&#10005;\" Width=\"52\" Height=\"56\"" fn)
+  (write-line "                    <Button x:Name=\"BtnClose\" Grid.Column=\"2\" Content=\"&#10005;\" Width=\"40\" Height=\"40\"" fn)
   (write-line "                            Background=\"Transparent\" BorderThickness=\"0\" Foreground=\"#555555\" FontSize=\"14\"" fn)
   (write-line "                            Cursor=\"Hand\"/>" fn)
   (write-line "                </Grid>" fn)
@@ -395,21 +398,21 @@
   (write-line "                    </Grid>" fn)
   (write-line "                </ScrollViewer>" fn)
   (write-line "" fn)
-  (write-line "                <Border Grid.Row=\"2\" Margin=\"0,4,0,0\" Padding=\"16,12\" Background=\"#F7F7F7\" CornerRadius=\"8\"" fn)
+  (write-line "                <Border Grid.Row=\"2\" Margin=\"0,3,0,0\" Padding=\"12,8\" Background=\"#F7F7F7\" CornerRadius=\"8\"" fn)
   (write-line "                        BorderBrush=\"#E4E4E4\" BorderThickness=\"1\">" fn)
   (write-line "                    <StackPanel Orientation=\"Horizontal\">" fn)
   (write-line "                        <TextBlock Text=\"検索範囲:\" VerticalAlignment=\"Center\" Margin=\"0,0,16,0\"" fn)
   (write-line "                                   FontWeight=\"Bold\" Foreground=\"#444444\" FontSize=\"12\"/>" fn)
   (write-line "                        <RadioButton x:Name=\"RadioWindow\" Content=\"画面上で対象を選択\" GroupName=\"range\"" fn)
-  (write-line "                                     Margin=\"0,0,22,0\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
+  (write-line "                                     Margin=\"0,0,16,0\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
   (write-line "                        <RadioButton x:Name=\"RadioPolygon\" Content=\"閉じたポリラインの内側を選択\" GroupName=\"range\"" fn)
-  (write-line "                                     Margin=\"0,0,22,0\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
+  (write-line "                                     Margin=\"0,0,16,0\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
   (write-line "                        <RadioButton x:Name=\"RadioAll\" Content=\"図面全体から検索\" GroupName=\"range\"" fn)
   (write-line "                                     IsChecked=\"True\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
   (write-line "                    </StackPanel>" fn)
   (write-line "                </Border>" fn)
   (write-line "" fn)
-  (write-line "                <Grid Grid.Row=\"3\" Margin=\"0,14,0,0\">" fn)
+  (write-line "                <Grid Grid.Row=\"3\" Margin=\"0,10,0,0\">" fn)
   (write-line "                    <Grid.ColumnDefinitions>" fn)
   (write-line "                        <ColumnDefinition Width=\"Auto\"/>" fn)
   (write-line "                        <ColumnDefinition Width=\"*\"/>" fn)
@@ -1089,5 +1092,5 @@
   )
   (princ)
 )
-(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v8:右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
+(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v8:フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
 (princ)
