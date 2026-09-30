@@ -1,44 +1,53 @@
 ;;; ================================================================
-;;;  NUM.lsp  -  numbered tags for objects / CSV export
+;;;  NUM.lsp  -  番号タグの連番付与 / CSV書き出し / ブロック属性
 ;;;
-;;;   NUM  : click objects or blocks one by one to place sequential number tags
-;;;          labels may have a letter prefix (X1, Y1, ...); start with e.g. X1
-;;;          typing letters only (e.g. X) continues after the highest existing number of that prefix
-;;;          same number on several objects = quantity: K (keep the number) or M (multi-select)
-;;;   NUMX : export No, name, width, depth, height, quantity to CSV,
-;;;          quantity = how many objects carry the same number;
-;;;          block sizes = block definition extents x |scale| (rotation cancelled); other objects = axis-aligned extents;
-;;;          a LINE of length *num-mark-len* (100) inside a block definition => depth reduced by *num-mark-sub* (50);
-;;;          block attributes win when filled in: name <- attribute for the product name, width/depth/height <- attributes
-;;;          (empty attribute => measured value);
-;;;          one file per area (= letter prefix): <name>_<area>.csv
+;;;   NUM  : 図形やブロックを順にクリックし、連番の番号タグを付ける
+;;;          番号は英字付き(X1、Y1...)も可。開始時に英字だけ入力すると、
+;;;          その英字の中で図面にある最大の番号の続きから始まる
+;;;          同じ番号を複数の対象に付けるには、K(固定)かM(複数選択)を使う
+;;;   NUMX : 番号ごとに、No・名称・幅・奥行・高さ・個数をCSVに書き出す
+;;;          個数 = 同じ番号が付いた対象の数
+;;;          サイズは、ブロックなら定義の外形×拡大率(回転は打ち消す)、
+;;;          それ以外は軸に平行な外形。ブロック内に長さ *num-mark-len*(100)
+;;;          の線分があれば、奥行きから *num-mark-sub*(50)を引く
+;;;          属性(幅・奥行・高さ・品名)に入力があれば、測定値より優先する
+;;;          エリア(=番号の英字部分)ごとに、CSVを分けて書き出す
+;;;   NUMA : 既存のブロックに、標準の属性(階数・エリア・什器No・品名・色・幅・
+;;;          奥行・高さ・数量・什器分類・備考)をまとめて追加し、図面に反映する
+;;;          (ATTSYNC)。項目を変えたいときは *numa-tags* を書き換える。
+;;;          配置位置: ブロックの最下部にある「中点」(POINT)があればそこ、
+;;;          なければ最下辺の中央。そこから下方向へ200ピッチ、文字高さ125
+;;;   NUMC : 1つのブロックの属性値を、他のブロックへコピーする(タグ名が
+;;;          一致する項目だけ)。コピーしないタグは *numc-skip* で変更できる
 ;;;
-;;;   NUMA : add attribute definitions (floor, area, fixture No, name, height, quantity, category,
-;;;          notes) to existing blocks and synchronize them (ATTSYNC); edit *numa-tags* to change the items
-;;;
-;;;  - Number tag = plain TEXT (default) or circle block "NUM_TAG" (attribute NO);
-;;;    switch with the T option of NUM
-;;;  - TEXT tags copy the properties of the existing numbering text: layer, text style ASA,
-;;;    height 400, width factor 0.7, justification Middle-Center (MC), ByLayer (see *num-lay* etc. below)
-;;;  - Each numbered object stores the tag handle in XDATA (app name NUM_APP)
-;;;  - Erasing a tag invalidates that number (NUMX skips it)
-;;;  - To change a number, edit the tag's attribute (NO)
-;;;  - This file is pure ASCII: Japanese messages are written as \U+ escapes
-;;;    so it loads the same way regardless of the text encoding
+;;;  ・番号タグ = 文字(既定)、または 丸+属性NO のブロック「NUM_TAG」
+;;;    (NUMの対象選択中に T で切り替え)
+;;;  ・文字タグは、既存の番号文字と同じプロパティ(画層・文字スタイルASA・
+;;;    高さ400・幅係数0.7・位置合わせMC・ByLayer)で作成する
+;;;  ・番号を付けた対象には、XDATA(アプリ名 NUM_APP)でタグのハンドルを記録
+;;;  ・タグを図面から消すと、その番号は無効になる(NUMXにも出ない)
+;;;  ・番号を直したいときは、タグを編集する(文字なら直接、丸付きブロック
+;;;    なら属性値NOを編集)
+;;;  ・実行時に表示される日本語の文字列は、\U+XXXX 形式のエスケープで
+;;;    半角英数字として埋め込んであるため、ファイルの文字コードに関係なく
+;;;    AutoCAD上では正しく日本語で表示される
+;;;  ・コメント(この説明文を含む)は日本語のまま入っている。ファイルは
+;;;    UTF-8(BOM付き)で保存してあるので、対応するエディタで開けば文字化け
+;;;    しない。実行(AutoCADへの読み込み)には、コメントの表示は影響しない
 ;;; ================================================================
 (vl-load-com)
 
-(setq *num-app*    "NUM_APP"     ; XDATA application name
-      *num-blk*    "NUM_TAG"     ; tag block name (only used by the BLOCK style)
-      *num-lay*    "\U+30CA\U+30F3\U+30D0\U+30EA\U+30F3\U+30B0"  ; layer for number tags (existing layer is used as is)
-      *num-tstyle* "ASA"         ; text style for TEXT tags (falls back to the current style)
-      *num-th*     400.0         ; text height of TEXT tags
-      *num-mark-len* 100.0       ; a LINE of this length inside a block = depth marker
-      *num-mark-sub* 50.0)       ; depth is reduced by this much when such a LINE exists
+(setq *num-app*    "NUM_APP"     ; XDATAのアプリケーション名
+      *num-blk*    "NUM_TAG"     ; タグ用ブロックの名前(表示形式がBLOCKのときだけ使う)
+      *num-lay*    "\U+30CA\U+30F3\U+30D0\U+30EA\U+30F3\U+30B0"  ; 番号タグの画層(すでにある画層は、そのまま使う)
+      *num-tstyle* "ASA"         ; 文字(TEXT)タグの文字スタイル(なければ現在のスタイルを使う)
+      *num-th*     400.0         ; 文字(TEXT)タグの文字高さ
+      *num-mark-len* 100.0       ; ブロック内にこの長さの線分があれば、奥行き調整のマークとみなす
+      *num-mark-sub* 50.0)       ; その線分がある場合、奥行きからこの値を引く
 
-;;; ---- Helper functions ------------------------------------------
+;;; ---- 補助関数 ------------------------------------------------
 
-;; Return (min-pt max-pt) of the object extents, or nil on failure
+;; 図形の範囲(最小点 最大点)を返す。取得できなければ nil
 (defun num:bbox (ent / obj mn mx)
   (setq obj (vlax-ename->vla-object ent))
   (if (not (vl-catch-all-error-p
@@ -47,8 +56,8 @@
   )
 )
 
-;; Extents (min-pt max-pt) of a block DEFINITION in its own coordinates, attribute definitions excluded.
-;; Results are cached per block name in *num-bcache* (cleared at the start of each NUMX run).
+;; ブロック定義(元の図形)の外形(最小点 最大点)を、その定義自身の座標で返す。属性定義は含めない。
+;; 結果はブロック名ごとに *num-bcache* にキャッシュする(NUMXを実行するたびにクリアする)。
 (defun num:blk-extents (blkname / hit def e mn mx lo hi ext)
   (if (setq hit (assoc blkname *num-bcache*))
     (cdr hit)
@@ -75,7 +84,37 @@
   )
 )
 
-;; T when the block definition contains a LINE whose length is *num-mark-len* (cached per block name)
+;; 属性を配置する基準点を返す。ブロックの中に、外形の最下部(Y座標が外形の最小Yに近い)にある
+;; ポイント(点)があれば、その点を使う。なければ、外形の最下辺の中点(X方向の中央・Yは最小値)
+;; を使う。結果はブロック名ごとに *num-acache* にキャッシュする。
+(defun num:blk-anchor (blkname / hit def e ext pt best)
+  (if (setq hit (assoc blkname *num-acache*))
+    (cdr hit)
+    (progn
+      (setq ext (num:blk-extents blkname)
+            def (vl-catch-all-apply
+                  'vla-Item
+                  (list (vla-get-Blocks (vla-get-ActiveDocument (vlax-get-acad-object)))
+                        blkname)))
+      (if (and ext (not (vl-catch-all-error-p def)))
+        (vlax-for e def
+          (if (and (not best) (= (vla-get-ObjectName e) "AcDbPoint"))
+            (progn
+              (setq pt (vlax-safearray->list (vla-get-Coordinates e)))
+              (if (< (abs (- (cadr pt) (cadr (car ext)))) 1.0)
+                (setq best pt))))))
+      (setq best (or best
+                     (if ext
+                       (list (/ (+ (car (car ext)) (car (cadr ext))) 2.0)
+                             (cadr (car ext))
+                             0.0))))
+      (setq *num-acache* (cons (cons blkname best) *num-acache*))
+      best
+    )
+  )
+)
+
+;; ブロック定義の中に、長さが *num-mark-len* の線分(LINE)があれば T を返す(ブロック名ごとにキャッシュ)
 (defun num:blk-marker (blkname / hit def e found)
   (if (setq hit (assoc blkname *num-mcache*))
     (cdr hit)
@@ -98,13 +137,13 @@
   )
 )
 
-;; (width depth height) of a block reference with the rotation cancelled:
-;; extents of the definition x |scale factors|.  nil if it cannot be measured.
-;; If the definition contains a LINE of length *num-mark-len*, the depth is reduced
-;; by *num-mark-sub* (once, however many such lines there are).
+;; ブロックの回転を打ち消した (幅 奥行 高さ) を返す。
+;; 値は、ブロック定義の外形 × 拡大率(絶対値)。測れない場合は nil。
+;; 定義の中に長さ *num-mark-len* の線分があれば、奥行きから *num-mark-sub* を1回だけ引く
+;; (その線分が何本あっても1回だけ引く)。
 (defun num:block-size (ent / obj nm ext w d h)
   (setq obj (vlax-ename->vla-object ent))
-  ;; vla-get-Name = the actual (possibly anonymous *U..) definition, so dynamic blocks are handled
+  ;; vla-get-Name は実際の定義名(動的ブロックでは無名の *U.. になることがある)を返すため、動的ブロックにも対応できる
   (setq nm (vla-get-Name obj))
   (if (setq ext (num:blk-extents nm))
     (progn
@@ -118,7 +157,7 @@
   )
 )
 
-;; Attribute values of a block reference as an alist ((TAG . text) ...), tags upper-cased (nil if none)
+;; ブロックの属性値を ((タグ名 . 値) ...) の連想リストで返す。タグ名は大文字化する(属性がなければ nil)
 (defun num:atts (obj / lst a)
   (if (= (vla-get-HasAttributes obj) :vlax-true)
     (foreach a (vlax-invoke obj 'GetAttributes)
@@ -127,7 +166,7 @@
   lst
 )
 
-;; Trimmed text of the attribute with this tag, or nil when it is missing or empty
+;; 指定したタグの属性値(前後の空白を除去)を返す。項目がない、または空なら nil
 (defun num:att-get (atts tag / v)
   (if (setq v (cdr (assoc (strcase tag) atts)))
     (progn
@@ -137,10 +176,17 @@
   )
 )
 
-;; "1800" / " 1800 " / "1,800" / "1800mm" -> 1800.0 ; anything else -> nil
+;; CSVの1項目分のテキストを返す(属性値がなければ空文字)。CSVを壊さないよう、
+;; 中の二重引用符は単引用符に置き換える。
+(defun num:csv-att (atts tag / v)
+  (setq v (num:att-get atts tag))
+  (if v (vl-string-translate "\"" "'" v) "")
+)
+
+;; 「1800」「 1800 」「1,800」「1800mm」 -> 1800.0 。それ以外は nil
 (defun num:att-num (str / s i)
   (setq s (vl-string-trim " " str))
-  ;; remove thousands separators
+  ;; 桁区切りのカンマを取り除く
   (while (setq i (vl-string-search "," s))
     (setq s (strcat (if (> i 0) (substr s 1 i) "")
                     (if (< (1+ i) (strlen s)) (substr s (+ i 2)) ""))))
@@ -150,9 +196,9 @@
   (if (/= s "") (distof s 2))
 )
 
-;; Text for one size column.  If any of the attribute tags has a value, that value is used
-;; (numbers are normalized, other text such as "-" is kept as typed); otherwise the measured
-;; value (or "-" when nothing could be measured).
+;; サイズ1項目分の文字列を返す。指定したタグのどれかに値が入力されていれば、その値を使う
+;; (数値は正規化し、「-」などの数値以外の文字はそのまま使う)。入力がなければ、測定した値
+;; (測れなければ「-」)を使う。
 (defun num:size-text (atts tags measured / v n tg)
   (foreach tg tags
     (if (and (not v) (setq n (num:att-get atts tg)))
@@ -166,14 +212,14 @@
   )
 )
 
-;; Rounded integer string of a number (- when 0.5 or less)
+;; 数値を四捨五入した整数の文字列にする(0.5以下は「-」)
 (defun num:fmt (v)
   (if (> v 0.5) (itoa (fix (+ v 0.5))) "-")
 )
 
-;; Split a label into (prefix number zero-pad-width has-digits).
-;;   "X1"->("X" 1 0 T)  "Y07"->("Y" 7 2 T)  "12"->("" 12 0 T)  "X"->("X" 1 0 nil)
-;; NOTE: AutoLISP "or"/"and" return T/nil, not a value, so they are not used to pick values here.
+;; 番号の文字列を (英字部分 数値 0埋め桁数 数字があったか) に分解する。
+;;   「X1」->("X" 1 0 T)  「Y07」->("Y" 7 2 T)  「12」->("" 12 0 T)  「X」->("X" 1 0 nil)
+;; 注記: AutoLISPの or/and は値ではなく T/nil を返すため、ここでは値の選択には使わない。
 (defun num:parse (s / len i d)
   (if (= s "")
     (list "" 0 0 nil)
@@ -191,7 +237,7 @@
   )
 )
 
-;; Build the label text from the current prefix / number / zero-pad width
+;; 現在の英字部分・番号・0埋め桁数から、表示する番号の文字列を作る
 (defun num:label (n / s)
   (setq s (itoa n))
   (while (< (strlen s) *num-width*)
@@ -200,18 +246,18 @@
   (strcat *num-prefix* s)
 )
 
-;; Set the current prefix / number / width from a typed label such as X1
+;; 入力された番号の文字列(例: X1)から、現在の英字部分・番号・桁数を設定する
 (defun num:set-label (str / p)
   (setq p (num:parse str))
   (setq *num-prefix* (car p)
         *num-width*  (caddr p)
-        ;; letters only (e.g. "X"): continue after the highest existing number of that prefix
+        ;; 英字だけの入力(例: 「X」)の場合は、その英字の中で図面にある最大の番号の続きにする
         *num-next*   (if (cadddr p)
                        (cadr p)
                        (1+ (num:max-no (car p)))))
 )
 
-;; Highest number in use for a prefix among the live tags in the drawing (0 if none)
+;; 図面にある(生きている)タグのうち、指定した英字部分で使われている最大の番号を返す(なければ0)
 (defun num:max-no (prefix / ss i ent tag val pr mx)
   (setq mx 0)
   (if (setq ss (ssget "_X" (list (list -3 (list *num-app*)))))
@@ -229,18 +275,18 @@
   mx
 )
 
-;; Make a string safe for use in a file name
+;; ファイル名に使えるよう、文字列中の使えない文字を置き換える
 (defun num:safe (str)
   (vl-string-translate "\\/:*?\"<>|" "_________" str)
 )
 
-;; Return the tag handle stored on the object (nil if none)
+;; 対象に記録したタグのハンドルを返す(なければ nil)
 (defun num:get-h (ent / xd)
   (setq xd (cdr (assoc -3 (entget ent (list *num-app*)))))
   (if xd (cdr (assoc 1005 (cdr (assoc *num-app* xd)))))
 )
 
-;; Store the tag handle on the object (non-nil on success)
+;; 対象にタグのハンドルを記録する(成功すれば非nil)
 (defun num:put-h (ent h / r)
   (regapp *num-app*)
   (setq r (vl-catch-all-apply
@@ -250,14 +296,14 @@
   (if (vl-catch-all-error-p r) nil r)
 )
 
-;; Remove the stored record from the object
+;; 対象の記録を消す
 (defun num:clear-h (ent)
   (vl-catch-all-apply
     'entmod
     (list (list (cons -1 ent) (list -3 (list *num-app*)))))
 )
 
-;; Return the ename of the live number tag for a handle (nil if erased or missing)
+;; ハンドルから、生きている番号タグの図形名を返す(なければ nil)
 (defun num:tag-ename (h / e ed)
   (if (and h
            (setq e (handent h))
@@ -272,7 +318,7 @@
   )
 )
 
-;; Return the displayed number of a tag: the TEXT string, or the NO attribute of a tag block
+;; タグに表示されている番号を返す。文字(TEXT)ならその文字列、丸付きブロックなら属性NOの値
 (defun num:tag-value (tag / ed e ed2 val)
   (setq ed (entget tag))
   (if (= (cdr (assoc 0 ed)) "INSERT")
@@ -294,7 +340,7 @@
   )
 )
 
-;; Create the tag block (circle + NO attribute) if missing. Returns T when usable
+;; タグ用ブロック(円 + 属性NO)がなければ作る。使える状態なら T
 (defun num:make-block ()
   (if (not (tblsearch "BLOCK" *num-blk*))
     (progn
@@ -320,7 +366,7 @@
   (if (tblsearch "BLOCK" *num-blk*) T nil)
 )
 
-;; Prepare the tag layer (create if missing, unlock and turn on)
+;; タグ用の画層を用意する(なければ作成、ロック・非表示なら解除)
 (defun num:prep-layer (doc / lay)
   (if (not (tblsearch "LAYER" *num-lay*))
     (vla-put-Color (vla-Add (vla-get-Layers doc) *num-lay*) 4)
@@ -331,9 +377,9 @@
   (princ)
 )
 
-;; Create a number tag showing txt at point pt.
-;; *num-style* = "TEXT" (plain text, default) or "BLOCK" (circle + attribute).
-;; Returns the ename of the new tag, or nil on failure.
+;; 点pt に、文字txtを表示する番号タグを作成する。
+;; *num-style* が "TEXT"(文字、既定)か "BLOCK"(丸+属性)かで、作るものが変わる。
+;; 作成したタグの図形名を返す。失敗した場合は nil。
 (defun num:make-tag (spc pt txt / blk a len)
   (cond
     ((= *num-style* "BLOCK")
@@ -348,7 +394,7 @@
              (progn
                (vla-put-TextString a txt)
                (vla-put-Layer a *num-lay*)
-               ;; long labels: shrink the text so it stays inside the circle
+               ;; 番号が長い場合は、丸の中に収まるよう文字を小さくする
                (if (> len 2)
                  (vl-catch-all-apply 'vla-put-Height
                                      (list a (/ (* 1.7 *num-r*) len)))))))
@@ -356,8 +402,8 @@
        )
      ))
     (t
-     ;; plain TEXT: layer *num-lay*, style ASA, width factor 0.7,
-     ;; justification Middle-Center (MC), color/linetype/lineweight ByLayer
+     ;; 文字(TEXT)の場合: 画層は *num-lay*、文字スタイルはASA、幅係数0.7、
+     ;; 位置合わせはMC(中央中心)、色・線種・線の太さはByLayer
      (if (entmake (list '(0 . "TEXT")
                         (cons 8 *num-lay*)
                         (cons 10 pt)
@@ -375,18 +421,18 @@
   )
 )
 
-;;; ---- NUM : place number tags ---------------------------------
+;;; ---- NUM : 番号タグを付ける -------------------------------------
 
-;; True when the entity is a number tag itself (tag layer, or the tag block)
+;; 対象が番号タグ自身(タグの画層、またはタグ用ブロック)であれば T を返す
 (defun num:tag-p (ed)
   (or (= (strcase (cdr (assoc 8 ed))) (strcase *num-lay*))
       (and (= (cdr (assoc 0 ed)) "INSERT")
            (= (strcase (cdr (assoc 2 ed))) *num-blk*)))
 )
 
-;; Put a tag with the text txt on object ent (center of its extents) and record it on the object.
-;; oldh = handle of the previous tag when re-numbering (or nil).
-;; Returns (ent tag oldh), or nil on failure.
+;; 対象entの範囲の中心に、文字txtのタグを付け、その記録を対象に残す。
+;; oldh は、付け直しのときの以前のタグのハンドル(付け直しでなければ nil)。
+;; (対象 タグ 以前のハンドル) を返す。失敗した場合は nil。
 (defun num:tag-object (ent spc txt oldh / bb pt tag h)
   (cond
     ((not (setq bb (num:bbox ent)))
@@ -443,15 +489,15 @@
                               (if *num-hold* "(\U+56FA\U+5B9A\U+4E2D)" "")
                               " \U+3092\U+4ED8\U+3051\U+308B\U+5BFE\U+8C61\U+3092\U+9078\U+629E [\U+623B\U+3059(U)/\U+8907\U+6570\U+9078\U+629E(M)/\U+540C\U+3058\U+756A\U+53F7\U+3092\U+7D9A\U+3051\U+308B(K)/\U+756A\U+53F7\U+5909\U+66F4(N)/\U+30B5\U+30A4\U+30BA(S)/\U+8868\U+793A\U+5F62\U+5F0F(T)] <\U+7D42\U+4E86>: ")))
     (cond
-      ;; clicked on empty space
+      ;; 何もない所をクリックした
       ((and (null sel) (= (getvar "ERRNO") 7))
        (princ "\n\U+5BFE\U+8C61\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002"))
-      ;; Enter = finish
+      ;; Enterキーで終了
       ((null sel) (setq done T))
-      ;; keyword options
+      ;; オプションのキーワード
       ((= (type sel) 'STR)
        (cond
-         ;; undo the last placement (a whole multi-selection counts as one)
+         ;; 直前に付けた番号を戻す(複数選択でまとめて付けた分も、まとめて1回として戻す)
          ((= sel "Undo")
           (if stack
             (progn
@@ -483,7 +529,7 @@
           (cond
             ((= s2 "Text") (setq *num-style* "TEXT"))
             ((= s2 "Block") (setq *num-style* "BLOCK"))))
-         ;; several objects at once, all get the same number (each object gets its own tag)
+         ;; 複数の対象をまとめて選び、すべてに同じ番号を付ける(タグは対象ごとに1つずつ作る)
          ((= sel "Multi")
           (princ "\n\U+540C\U+3058\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B\U+5BFE\U+8C61\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044(\U+7A93\U+9078\U+629E\U+30FB\U+4EA4\U+5DEE\U+9078\U+629E\U+306A\U+3069)")
           (if (setq ss (ssget))
@@ -505,12 +551,12 @@
                                    "")))
                   (if (not *num-hold*) (setq *num-next* (1+ *num-next*))))
                 (princ "\n\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+3089\U+308C\U+308B\U+5BFE\U+8C61\U+304C\U+3042\U+308A\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")))))
-         ;; keep using the same number for the following picks (toggle)
+         ;; 以降のクリックで、同じ番号を使い続ける(オンオフの切り替え)
          ((= sel "Keep")
           (if *num-hold*
             (progn
               (setq *num-hold* nil)
-              ;; if the current label has been used, advance to the next number
+              ;; 現在の番号がすでに使われていれば、次の番号に進める
               (if (and stack
                        (= (nth 1 (car stack)) *num-prefix*)
                        (= (nth 2 (car stack)) *num-next*))
@@ -518,7 +564,7 @@
               (princ (strcat "\n\U+56FA\U+5B9A\U+3092\U+89E3\U+9664\U+3057\U+307E\U+3057\U+305F\U+3002\U+6B21\U+306E\U+756A\U+53F7\U+306F " (num:label *num-next*) " \U+3067\U+3059\U+3002")))
             (progn
               (setq *num-hold* T)
-              ;; hold the label used last
+              ;; 直前に使った番号を固定する
               (if stack
                 (setq *num-prefix* (nth 1 (car stack))
                       *num-next*   (nth 2 (car stack))
@@ -526,14 +572,14 @@
               (princ (strcat "\n\U+756A\U+53F7 " (num:label *num-next*)
                              " \U+3092\U+56FA\U+5B9A\U+3057\U+307E\U+3057\U+305F\U+3002\U+3082\U+3046\U+4E00\U+5EA6 K \U+3067\U+89E3\U+9664\U+3059\U+308B\U+3068\U+6B21\U+306E\U+756A\U+53F7\U+306B\U+9032\U+307F\U+307E\U+3059\U+3002")))))
        ))
-      ;; an object was picked
+      ;; 対象がクリックされた
       (t
        (setq ent (car sel) ed (entget ent) oldh nil)
        (cond
-         ;; number tags themselves are skipped
+         ;; 番号タグ自身は対象から除く
          ((num:tag-p ed)
           (princ "\n\U+756A\U+53F7\U+30BF\U+30B0\U+81EA\U+4F53\U+306B\U+306F\U+4ED8\U+3051\U+3089\U+308C\U+307E\U+305B\U+3093\U+3002"))
-         ;; already numbered: ask whether to re-number (N = leave as is)
+         ;; すでに番号が付いている場合は、付け直すか確認する(いいえ の場合はそのまま)
          ((and (num:tag-ename (num:get-h ent))
                (progn
                  (initget "Yes No")
@@ -553,12 +599,12 @@
   (princ)
 )
 
-;;; ---- NUMX : export numbered objects to CSV ---------------------
+;;; ---- NUMX : 番号付きの対象をCSVに書き出す -------------------------
 
-(defun c:NUMX ( / ss i ent ed tag typ name bb sz val pr atts nm2 w d h rows merged m mixed path f r areas ar file kinds total)
+(defun c:NUMX ( / ss i ent ed tag typ name bb sz val pr atts nm2 w d h nfloor narea nfix ncolor ncat nnote rows merged m mixed path f r areas ar file kinds total)
 
   (setq *num-bcache* nil *num-mcache* nil)
-  ;; collect one row per numbered object
+  ;; 番号が付いた対象ごとに、1行分のデータを集める
   (setq ss (ssget "_X" (list (list -3 (list *num-app*)))))
   (if ss
     (progn
@@ -575,24 +621,31 @@
                   bb   (num:bbox ent)
                   sz   (if (= typ "INSERT") (num:block-size ent))
                   val  (num:tag-value tag))
-            ;; sz = (width depth height).  Blocks: rotation cancelled (see num:block-size).
-            ;; Anything else (or if that fails): axis-aligned extents.
+            ;; sz = (幅 奥行 高さ)。ブロックの場合は回転を打ち消した値(num:block-size を参照)。
+            ;; それ以外、または測れない場合は、軸に平行な外形の値。
             (if (and (not sz) bb)
               (setq sz (list (- (car  (cadr bb)) (car  (car bb)))
                              (- (cadr (cadr bb)) (cadr (car bb)))
                              (- (caddr (cadr bb)) (caddr (car bb))))))
-            ;; attributes (blocks only): a filled-in value wins over the measured one
+            ;; 属性(ブロックのみ): 値が入力されていれば、測定した値より優先する
             (setq atts (if (= typ "INSERT") (num:atts (vlax-ename->vla-object ent))))
             (if (setq nm2 (num:att-get atts "\U+54C1\U+540D")) (setq name (vl-string-translate "\"" "'" nm2)))
             (setq w (num:size-text atts '("\U+5E45") (if sz (car sz)))
                   d (num:size-text atts '("\U+5965\U+884C" "\U+5965\U+884C\U+304D") (if sz (cadr sz)))
                   h (num:size-text atts '("\U+9AD8\U+3055") (if sz (caddr sz))))
+            ;; ブロックの、その他の属性(いずれも入力がなければ空文字)
+            (setq nfloor (num:csv-att atts "\U+968E\U+6570")
+                  narea  (num:csv-att atts "\U+30A8\U+30EA\U+30A2")
+                  nfix   (num:csv-att atts "\U+4EC0\U+5668No")
+                  ncolor (num:csv-att atts "\U+8272")
+                  ncat   (num:csv-att atts "\U+4EC0\U+5668\U+5206\U+985E")
+                  nnote  (num:csv-att atts "\U+5099\U+8003"))
             (if (not val) (setq val ""))
             (setq pr (num:parse val))
-            ;; row = (PREFIX NUMBER LABEL NAME WIDTH DEPTH HEIGHT)
+            ;; row = (英字部分 番号 表示番号 名称 幅 奥行 高さ 階数 エリア 什器No 色 什器分類 備考)
             (setq rows
                   (cons (list (strcase (car pr)) (cadr pr) val name
-                              w d h)
+                              w d h nfloor narea nfix ncolor ncat nnote)
                         rows))
           )
         )
@@ -608,8 +661,8 @@
                          '(lambda (a b)
                             (or (< (car a) (car b))
                                 (and (= (car a) (car b)) (< (cadr a) (cadr b)))))))
-     ;; merge objects that share the same number: quantity = how many objects carry it.
-     ;; size / name of the first object are used.  merged item = (COUNT PREFIX NUMBER LABEL NAME W D H)
+     ;; 同じ番号を持つ対象をまとめる。個数は、その番号を持つ対象の数。
+     ;; サイズ・名称は、最初の1つの値を使う。まとめた1件 = (個数 英字部分 番号 表示番号 名称 幅 奥行 高さ)
      (setq merged nil mixed nil)
      (foreach r rows
        (setq m (car merged))
@@ -628,7 +681,7 @@
                       (apply 'strcat
                              (mapcar '(lambda (x) (strcat " " x))
                                      (reverse mixed))))))
-     ;; one CSV per area (= letter prefix): <name>_<area>.csv
+     ;; エリア(=番号の英字部分)ごとに、CSVを1つずつ書き出す: <ファイル名>_<エリア>.csv
      (setq path (getfiled "\U+4FDD\U+5B58\U+5148\U+3068\U+30D5\U+30A1\U+30A4\U+30EB\U+540D(\U+30A8\U+30EA\U+30A2\U+3054\U+3068\U+306B _\U+30A8\U+30EA\U+30A2\U+540D \U+304C\U+4ED8\U+3044\U+3066\U+4FDD\U+5B58\U+3055\U+308C\U+307E\U+3059)"
                           (strcat (getvar "DWGPREFIX")
                                   (vl-filename-base (getvar "DWGNAME"))
@@ -646,14 +699,16 @@
                               (num:safe (if (= ar "") "\U+306A\U+3057" ar)) ".csv"))
            (if (setq f (open file "w"))
              (progn
-               (write-line "No,\U+540D\U+79F0,\U+5E45(mm),\U+5965\U+884C(mm),\U+9AD8\U+3055(mm),\U+500B\U+6570" f)
+               (write-line "No,\U+540D\U+79F0,\U+5E45(mm),\U+5965\U+884C(mm),\U+9AD8\U+3055(mm),\U+500B\U+6570,\U+968E\U+6570,\U+30A8\U+30EA\U+30A2,\U+4EC0\U+5668No,\U+8272,\U+4EC0\U+5668\U+5206\U+985E,\U+5099\U+8003" f)
                (setq kinds 0 total 0)
                (foreach r rows
                  (if (= (cadr r) ar)
                    (progn
                      (write-line (strcat (cadddr r) ",\"" (nth 4 r) "\","
                                          (nth 5 r) "," (nth 6 r) "," (nth 7 r) ","
-                                         (itoa (car r)))
+                                         (itoa (car r)) ",\""
+                                         (nth 8 r) "\",\"" (nth 9 r) "\",\"" (nth 10 r)
+                                         "\",\"" (nth 11 r) "\",\"" (nth 12 r) "\",\"" (nth 13 r) "\"")
                                  f)
                      (setq kinds (1+ kinds) total (+ total (car r))))))
                (close f)
@@ -665,13 +720,13 @@
   (princ)
 )
 
-;;; ---- NUMA : add the standard attribute definitions to existing blocks ----
+;;; ---- NUMA : 既存のブロックに、標準の属性を追加する -----------------
 
-;; Attribute tags to add (edit this list to change the items).
-;; Each becomes an invisible, preset attribute (not asked when the block is inserted).
-(setq *numa-tags* '("\U+968E\U+6570" "\U+30A8\U+30EA\U+30A2" "\U+4EC0\U+5668No" "\U+54C1\U+540D" "\U+5E45" "\U+5965\U+884C" "\U+9AD8\U+3055" "\U+6570\U+91CF" "\U+4EC0\U+5668\U+5206\U+985E" "\U+5099\U+8003"))
+;; 追加する属性のタグ一覧(項目を変えたいときは、この一覧を書き換える)。
+;; それぞれ、非表示・プリセット(ブロックを置くときに聞かれない)属性になる。
+(setq *numa-tags* '("\U+968E\U+6570" "\U+30A8\U+30EA\U+30A2" "\U+4EC0\U+5668No" "\U+54C1\U+540D" "\U+8272" "\U+5E45" "\U+5965\U+884C" "\U+9AD8\U+3055" "\U+6570\U+91CF" "\U+4EC0\U+5668\U+5206\U+985E" "\U+5099\U+8003"))
 
-(defun c:NUMA ( / *error* doc oldecho ss i obj nm names def have e tag k a added tot nblk)
+(defun c:NUMA ( / *error* doc oldecho ss i obj nm names def have e tag idx a added tot nblk anc)
 
   (defun *error* (msg)
     (if oldecho (setvar "CMDECHO" oldecho))
@@ -683,10 +738,11 @@
   )
 
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+  (setq *num-acache* nil)
   (princ "\n\U+5C5E\U+6027\U+3092\U+8FFD\U+52A0\U+3059\U+308B\U+30D6\U+30ED\U+30C3\U+30AF\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044")
   (if (setq ss (ssget '((0 . "INSERT"))))
     (progn
-      ;; unique block names (dynamic blocks: the base block name)
+      ;; 選んだ対象のブロック名を、重複なく集める(動的ブロックは元のブロック名)
       (setq i 0 names nil)
       (repeat (sslength ss)
         (setq obj (vlax-ename->vla-object (ssname ss i)) i (1+ i))
@@ -704,33 +760,37 @@
         (if (= (vla-get-IsXRef def) :vlax-true)
           (princ (strcat "\n" nm ": \U+5916\U+90E8\U+53C2\U+7167\U+306E\U+305F\U+3081\U+30B9\U+30AD\U+30C3\U+30D7\U+3057\U+307E\U+3057\U+305F"))
           (progn
-            ;; tags already defined in this block
+            ;; このブロックに、すでに定義されている属性のタグ
             (setq have nil)
             (vlax-for e def
               (if (= (vla-get-ObjectName e) "AcDbAttributeDefinition")
                 (setq have (cons (strcase (vla-get-TagString e)) have)))
             )
-            (setq added 0 k 0)
+            (setq anc (num:blk-anchor nm))
+            (setq added 0 idx 0)
             (foreach tag *numa-tags*
               (if (not (member (strcase tag) have))
                 (progn
-                  ;; height 2.5, mode 9 = invisible + preset; stacked below the base point
+                  ;; 文字高さ125、モード9(非表示+プリセット)。基準点から下方向に、200ピッチで並べる。
+                  ;; idx は *numa-tags* の中でのその項目の順番。あとから足りない項目だけをNUMAで
+                  ;; 追加しても、各項目の行がずれたり重なったりしないようにするため。
                   (setq a (vl-catch-all-apply
                             'vla-AddAttribute
-                            (list def 2.5 9 tag
-                                  (vlax-3d-point (list 0.0 (* -4.0 k) 0.0))
+                            (list def 125.0 9 tag
+                                  (vlax-3d-point (list (car anc) (- (cadr anc) (* 200.0 idx)) 0.0))
                                   tag "")))
                   (if (vl-catch-all-error-p a)
                     (princ (strcat "\n" nm ": \U+300C" tag "\U+300D\U+3092\U+8FFD\U+52A0\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F"))
                     (progn
                       (vla-put-Layer a "0")
-                      (setq added (1+ added) k (1+ k))))
+                      (setq added (1+ added))))
                 )
               )
+              (setq idx (1+ idx))
             )
             (if (> added 0)
               (progn
-                ;; push the new definitions to the block references already in the drawing
+                ;; 追加した属性定義を、図面にすでにあるそのブロックに反映する
                 (command "_.ATTSYNC" "_N" nm)
                 (setq tot (+ tot added) nblk (1+ nblk))
                 (princ (strcat "\n" nm ": " (itoa added) " \U+9805\U+76EE\U+3092\U+8FFD\U+52A0\U+3057\U+3066\U+53CD\U+6620\U+3057\U+307E\U+3057\U+305F")))
@@ -747,5 +807,75 @@
   (princ)
 )
 
-(princ "\nNUM(\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B) / NUMX(\U+500B\U+6570\U+3064\U+304DCSV\U+66F8\U+304D\U+51FA\U+3057) / NUMA(\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+5C5E\U+6027\U+3092\U+8FFD\U+52A0) \U+3092\U+8AAD\U+307F\U+8FBC\U+307F\U+307E\U+3057\U+305F\U+3002")
+;;; ---- NUMC : 属性の値を、他のブロックにコピーする -------------------
+
+;; NUMCでコピーしないタグ(対象ごとに固有の値として残す。変えたいときはここを書き換える)。
+(setq *numc-skip* '("\U+4EC0\U+5668No"))
+
+(defun c:NUMC ( / *error* doc s0 sh sObj satts ss i tEnt tObj a tag v cnt objs skipped skiptags)
+
+  (defun *error* (msg)
+    (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
+      (princ (strcat "\n\U+30A8\U+30E9\U+30FC: " msg))
+    )
+    (princ)
+  )
+
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+  (setq s0 (entsel "\n\U+30B3\U+30D4\U+30FC\U+5143\U+306E\U+30D6\U+30ED\U+30C3\U+30AF(\U+5C5E\U+6027\U+304C\U+5165\U+3063\U+3066\U+3044\U+308B\U+3082\U+306E)\U+3092\U+9078\U+629E: "))
+  (cond
+    ((not s0)
+     (princ "\n\U+5BFE\U+8C61\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002"))
+    ((/= (cdr (assoc 0 (entget (car s0)))) "INSERT")
+     (princ "\n\U+30D6\U+30ED\U+30C3\U+30AF\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044\U+3002"))
+    (t
+     (setq sh   (cdr (assoc 5 (entget (car s0))))
+           sObj (vlax-ename->vla-object (car s0))
+           satts (num:atts sObj))
+     (cond
+       ((not satts)
+        (princ "\n\U+3053\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+306F\U+5C5E\U+6027\U+304C\U+3042\U+308A\U+307E\U+305B\U+3093\U+3002"))
+       (t
+        (setq skiptags (mapcar 'strcase *numc-skip*))
+        (princ "\n\U+30B3\U+30D4\U+30FC\U+5148\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+3092\U+9078\U+629E(\U+8907\U+6570\U+53EF\U+30FB\U+7A93\U+9078\U+629E\U+3082\U+53EF)\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044")
+        (if (setq ss (ssget '((0 . "INSERT"))))
+          (progn
+            (setq i 0 cnt 0 objs 0 skipped 0)
+            (repeat (sslength ss)
+              (setq tEnt (ssname ss i) i (1+ i))
+              (cond
+                ;; コピー先の選択に、コピー元自身が含まれていた場合は除く
+                ((= (cdr (assoc 5 (entget tEnt))) sh)
+                 (setq skipped (1+ skipped)))
+                (t
+                 (setq tObj (vlax-ename->vla-object tEnt))
+                 (if (= (vla-get-HasAttributes tObj) :vlax-true)
+                   (progn
+                     (setq objs (1+ objs))
+                     (foreach a (vlax-invoke tObj 'GetAttributes)
+                       (setq tag (strcase (vla-get-TagString a)))
+                       (if (and (not (member tag skiptags))
+                                (setq v (cdr (assoc tag satts))))
+                         (progn
+                           (vla-put-TextString a v)
+                           (setq cnt (1+ cnt))))
+                     )
+                   )
+                   (setq skipped (1+ skipped)))))
+            )
+            (princ (strcat "\n" (itoa objs) " \U+500B\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+3001\U+5408\U+8A08 " (itoa cnt) " \U+9805\U+76EE\U+3092\U+30B3\U+30D4\U+30FC\U+3057\U+307E\U+3057\U+305F\U+3002"
+                           (if (> skipped 0)
+                             (strcat "(\U+5BFE\U+8C61\U+5916 " (itoa skipped) " \U+500B)")
+                             "")))
+          )
+          (princ "\n\U+30B3\U+30D4\U+30FC\U+5148\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")
+        )
+       )
+     )
+    )
+  )
+  (princ)
+)
+
+(princ "\nNUM(\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B) / NUMX(\U+500B\U+6570\U+3064\U+304DCSV\U+66F8\U+304D\U+51FA\U+3057) / NUMA(\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+5C5E\U+6027\U+3092\U+8FFD\U+52A0) / NUMC(\U+5C5E\U+6027\U+306E\U+30B3\U+30D4\U+30FC) \U+3092\U+8AAD\U+307F\U+8FBC\U+307F\U+307E\U+3057\U+305F\U+3002")
 (princ)
