@@ -17,8 +17,11 @@
 ;;;          (ATTSYNC)。項目を変えたいときは *numa-tags* を書き換える。
 ;;;          配置位置: ブロックの最下部にある「中点」(POINT)があればそこ、
 ;;;          なければ最下辺の中央。そこから下方向へ200ピッチ、文字高さ125
-;;;   NUMC : 1つのブロックの属性値を、他のブロックへコピーする(タグ名が
-;;;          一致する項目だけ)。コピーしないタグは *numc-skip* で変更できる
+;;;   NUMC : 1つのブロックの属性値を、他のブロックへコピーする。コピー先の
+;;;          属性(コピー元とは無関係なものも含む)はいったんすべて削除し、
+;;;          コピー元と同じ項目を作り直してから(ブロック定義ごと=そのブロック
+;;;          の他のインスタンスにも反映)、値をコピーする。既存の値は失われる。
+;;;          コピーしないタグは *numc-skip* で変更できる
 ;;;
 ;;;  ・番号タグ = 文字(既定)、または 丸+属性NO のブロック「NUM_TAG」
 ;;;    (NUMの対象選択中に T で切り替え)
@@ -28,18 +31,18 @@
 ;;;  ・タグを図面から消すと、その番号は無効になる(NUMXにも出ない)
 ;;;  ・番号を直したいときは、タグを編集する(文字なら直接、丸付きブロック
 ;;;    なら属性値NOを編集)
-;;;  ・実行時に表示される日本語の文字列は、\U+XXXX 形式のエスケープで
-;;;    半角英数字として埋め込んであるため、ファイルの文字コードに関係なく
-;;;    AutoCAD上では正しく日本語で表示される
-;;;  ・コメント(この説明文を含む)は日本語のまま入っている。ファイルは
-;;;    UTF-8(BOM付き)で保存してあるので、対応するエディタで開けば文字化け
-;;;    しない。実行(AutoCADへの読み込み)には、コメントの表示は影響しない
+;;;  ・このファイルは、日本語(全角)の文字をそのまま含んでいる(文字列・
+;;;    コメントとも)。文字コードは UTF-8(BOM付き)で保存する
+;;;  ・AutoCAD 2021以降は、システム変数 LISPSYS の既定値(1)でAutoLISPが
+;;;    Unicodeに完全対応しており、この形式でそのまま正しく読み込める。
+;;;    LISPSYSが0(2020以前の互換モード)の場合は、Unicodeに対応しないため、
+;;;    文字コードをシフトJIS(ANSI)に変換したファイルが別途必要になる
 ;;; ================================================================
 (vl-load-com)
 
 (setq *num-app*    "NUM_APP"     ; XDATAのアプリケーション名
       *num-blk*    "NUM_TAG"     ; タグ用ブロックの名前(表示形式がBLOCKのときだけ使う)
-      *num-lay*    "\U+30CA\U+30F3\U+30D0\U+30EA\U+30F3\U+30B0"  ; 番号タグの画層(すでにある画層は、そのまま使う)
+      *num-lay*    "ナンバリング"  ; 番号タグの画層(すでにある画層は、そのまま使う)
       *num-tstyle* "ASA"         ; 文字(TEXT)タグの文字スタイル(なければ現在のスタイルを使う)
       *num-th*     400.0         ; 文字(TEXT)タグの文字高さ
       *num-mark-len* 100.0       ; ブロック内にこの長さの線分があれば、奥行き調整のマークとみなす
@@ -103,11 +106,12 @@
               (setq pt (vlax-safearray->list (vla-get-Coordinates e)))
               (if (< (abs (- (cadr pt) (cadr (car ext)))) 1.0)
                 (setq best pt))))))
-      (setq best (or best
-                     (if ext
-                       (list (/ (+ (car (car ext)) (car (cadr ext))) 2.0)
-                             (cadr (car ext))
-                             0.0))))
+      ;; NOTE: AutoLISPの or は値ではなく T/nil を返すため、ここでは or で値を選ばない
+      (if (not best)
+        (setq best (if ext
+                     (list (/ (+ (car (car ext)) (car (cadr ext))) 2.0)
+                           (cadr (car ext))
+                           0.0))))
       (setq *num-acache* (cons (cons blkname best) *num-acache*))
       best
     )
@@ -436,7 +440,7 @@
 (defun num:tag-object (ent spc txt oldh / bb pt tag h)
   (cond
     ((not (setq bb (num:bbox ent)))
-     (princ "\n\U+5BFE\U+8C61\U+306E\U+7BC4\U+56F2\U+3092\U+53D6\U+5F97\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")
+     (princ "\n対象の範囲を取得できませんでした。")
      nil)
     (t
      (setq pt (list (/ (+ (car (car bb)) (car (cadr bb))) 2.0)
@@ -450,7 +454,7 @@
         (list ent tag oldh))
        (t
         (if tag (entdel tag))
-        (princ "\n\U+3053\U+306E\U+5BFE\U+8C61\U+306B\U+306F\U+756A\U+53F7\U+3092\U+8A18\U+9332\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F(\U+753B\U+5C64\U+304C\U+30ED\U+30C3\U+30AF\U+3055\U+308C\U+3066\U+3044\U+307E\U+305B\U+3093\U+304B?)")
+        (princ "\nこの対象には番号を記録できませんでした(画層がロックされていませんか?)")
         nil))
     )
   )
@@ -461,7 +465,7 @@
   (defun *error* (msg)
     (if doc (vl-catch-all-apply 'vla-EndUndoMark (list doc)))
     (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
-      (princ (strcat "\n\U+30A8\U+30E9\U+30FC: " msg))
+      (princ (strcat "\nエラー: " msg))
     )
     (princ)
   )
@@ -476,7 +480,7 @@
   (or *num-th* (setq *num-th* 400.0))
   (setq *num-hold* nil)
 
-  (setq s0 (getstring (strcat "\n\U+958B\U+59CB\U+756A\U+53F7(\U+4F8B: X1 / \U+82F1\U+5B57\U+3060\U+3051\U+306A\U+3089\U+7D9A\U+304D\U+306E\U+756A\U+53F7) <" (num:label *num-next*) ">: ")))
+  (setq s0 (getstring (strcat "\n開始番号(例: X1 / 英字だけなら続きの番号) <" (num:label *num-next*) ">: ")))
   (if (and s0 (/= s0 "")) (num:set-label s0))
 
   (num:prep-layer doc)
@@ -485,13 +489,13 @@
   (while (not done)
     (initget "Undo Size Number Type Multi Keep")
     (setvar "ERRNO" 0)
-    (setq sel (entsel (strcat "\n\U+756A\U+53F7 " (num:label *num-next*)
-                              (if *num-hold* "(\U+56FA\U+5B9A\U+4E2D)" "")
-                              " \U+3092\U+4ED8\U+3051\U+308B\U+5BFE\U+8C61\U+3092\U+9078\U+629E [\U+623B\U+3059(U)/\U+8907\U+6570\U+9078\U+629E(M)/\U+540C\U+3058\U+756A\U+53F7\U+3092\U+7D9A\U+3051\U+308B(K)/\U+756A\U+53F7\U+5909\U+66F4(N)/\U+30B5\U+30A4\U+30BA(S)/\U+8868\U+793A\U+5F62\U+5F0F(T)] <\U+7D42\U+4E86>: ")))
+    (setq sel (entsel (strcat "\n番号 " (num:label *num-next*)
+                              (if *num-hold* "(固定中)" "")
+                              " を付ける対象を選択 [戻す(U)/複数選択(M)/同じ番号を続ける(K)/番号変更(N)/サイズ(S)/表示形式(T)] <終了>: ")))
     (cond
       ;; 何もない所をクリックした
       ((and (null sel) (= (getvar "ERRNO") 7))
-       (princ "\n\U+5BFE\U+8C61\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002"))
+       (princ "\n対象が選択されませんでした。"))
       ;; Enterキーで終了
       ((null sel) (setq done T))
       ;; オプションのキーワード
@@ -508,30 +512,30 @@
                   (num:put-h (car item) (caddr item))
                   (num:clear-h (car item))))
               (setq *num-prefix* (nth 1 rec) *num-next* (nth 2 rec) *num-width* (nth 3 rec))
-              (princ "\n1\U+3064\U+623B\U+3057\U+307E\U+3057\U+305F\U+3002"))
-            (princ "\n\U+623B\U+305B\U+308B\U+3082\U+306E\U+304C\U+3042\U+308A\U+307E\U+305B\U+3093\U+3002")))
+              (princ "\n1つ戻しました。"))
+            (princ "\n戻せるものがありません。")))
          ((= sel "Size")
           (if (= *num-style* "BLOCK")
             (progn
-              (setq r (getdist (strcat "\n\U+30BF\U+30B0\U+306E\U+534A\U+5F84 <" (rtos *num-r* 2 2) ">: ")))
+              (setq r (getdist (strcat "\nタグの半径 <" (rtos *num-r* 2 2) ">: ")))
               (if (and r (> r 0.0)) (setq *num-r* r)))
             (progn
-              (setq r (getdist (strcat "\n\U+6587\U+5B57\U+306E\U+9AD8\U+3055 <" (rtos *num-th* 2 2) ">: ")))
+              (setq r (getdist (strcat "\n文字の高さ <" (rtos *num-th* 2 2) ">: ")))
               (if (and r (> r 0.0)) (setq *num-th* r)))))
          ((= sel "Number")
-          (setq s1 (getstring (strcat "\n\U+756A\U+53F7(\U+4F8B: Y1 / \U+82F1\U+5B57\U+3060\U+3051\U+306A\U+3089\U+7D9A\U+304D\U+306E\U+756A\U+53F7) <" (num:label *num-next*) ">: ")))
+          (setq s1 (getstring (strcat "\n番号(例: Y1 / 英字だけなら続きの番号) <" (num:label *num-next*) ">: ")))
           (if (and s1 (/= s1 "")) (num:set-label s1)))
          ((= sel "Type")
           (initget "Text Block")
-          (setq s2 (getkword (strcat "\n\U+756A\U+53F7\U+306E\U+8868\U+793A\U+5F62\U+5F0F [\U+6587\U+5B57(T)/\U+4E38\U+4ED8\U+304D\U+30D6\U+30ED\U+30C3\U+30AF(B)] <"
-                                     (if (= *num-style* "BLOCK") "\U+4E38\U+4ED8\U+304D\U+30D6\U+30ED\U+30C3\U+30AF" "\U+6587\U+5B57")
+          (setq s2 (getkword (strcat "\n番号の表示形式 [文字(T)/丸付きブロック(B)] <"
+                                     (if (= *num-style* "BLOCK") "丸付きブロック" "文字")
                                      ">: ")))
           (cond
             ((= s2 "Text") (setq *num-style* "TEXT"))
             ((= s2 "Block") (setq *num-style* "BLOCK"))))
          ;; 複数の対象をまとめて選び、すべてに同じ番号を付ける(タグは対象ごとに1つずつ作る)
          ((= sel "Multi")
-          (princ "\n\U+540C\U+3058\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B\U+5BFE\U+8C61\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044(\U+7A93\U+9078\U+629E\U+30FB\U+4EA4\U+5DEE\U+9078\U+629E\U+306A\U+3069)")
+          (princ "\n同じ番号を付ける対象を選択してください(窓選択・交差選択など)")
           (if (setq ss (ssget))
             (progn
               (setq items nil skipped 0 i 0)
@@ -545,12 +549,12 @@
               (if items
                 (progn
                   (setq stack (cons (list items *num-prefix* *num-next* *num-width*) stack))
-                  (princ (strcat "\n" (num:label *num-next*) " \U+3092 " (itoa (length items)) " \U+500B\U+306B\U+4ED8\U+3051\U+307E\U+3057\U+305F"
+                  (princ (strcat "\n" (num:label *num-next*) " を " (itoa (length items)) " 個に付けました"
                                  (if (> skipped 0)
-                                   (strcat "(\U+30B9\U+30AD\U+30C3\U+30D7 " (itoa skipped) " \U+500B)")
+                                   (strcat "(スキップ " (itoa skipped) " 個)")
                                    "")))
                   (if (not *num-hold*) (setq *num-next* (1+ *num-next*))))
-                (princ "\n\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+3089\U+308C\U+308B\U+5BFE\U+8C61\U+304C\U+3042\U+308A\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")))))
+                (princ "\n番号を付けられる対象がありませんでした。")))))
          ;; 以降のクリックで、同じ番号を使い続ける(オンオフの切り替え)
          ((= sel "Keep")
           (if *num-hold*
@@ -561,7 +565,7 @@
                        (= (nth 1 (car stack)) *num-prefix*)
                        (= (nth 2 (car stack)) *num-next*))
                 (setq *num-next* (1+ *num-next*)))
-              (princ (strcat "\n\U+56FA\U+5B9A\U+3092\U+89E3\U+9664\U+3057\U+307E\U+3057\U+305F\U+3002\U+6B21\U+306E\U+756A\U+53F7\U+306F " (num:label *num-next*) " \U+3067\U+3059\U+3002")))
+              (princ (strcat "\n固定を解除しました。次の番号は " (num:label *num-next*) " です。")))
             (progn
               (setq *num-hold* T)
               ;; 直前に使った番号を固定する
@@ -569,8 +573,8 @@
                 (setq *num-prefix* (nth 1 (car stack))
                       *num-next*   (nth 2 (car stack))
                       *num-width*  (nth 3 (car stack))))
-              (princ (strcat "\n\U+756A\U+53F7 " (num:label *num-next*)
-                             " \U+3092\U+56FA\U+5B9A\U+3057\U+307E\U+3057\U+305F\U+3002\U+3082\U+3046\U+4E00\U+5EA6 K \U+3067\U+89E3\U+9664\U+3059\U+308B\U+3068\U+6B21\U+306E\U+756A\U+53F7\U+306B\U+9032\U+307F\U+307E\U+3059\U+3002")))))
+              (princ (strcat "\n番号 " (num:label *num-next*)
+                             " を固定しました。もう一度 K で解除すると次の番号に進みます。")))))
        ))
       ;; 対象がクリックされた
       (t
@@ -578,12 +582,12 @@
        (cond
          ;; 番号タグ自身は対象から除く
          ((num:tag-p ed)
-          (princ "\n\U+756A\U+53F7\U+30BF\U+30B0\U+81EA\U+4F53\U+306B\U+306F\U+4ED8\U+3051\U+3089\U+308C\U+307E\U+305B\U+3093\U+3002"))
+          (princ "\n番号タグ自体には付けられません。"))
          ;; すでに番号が付いている場合は、付け直すか確認する(いいえ の場合はそのまま)
          ((and (num:tag-ename (num:get-h ent))
                (progn
                  (initget "Yes No")
-                 (/= (getkword "\n\U+3059\U+3067\U+306B\U+756A\U+53F7\U+304C\U+4ED8\U+3044\U+3066\U+3044\U+307E\U+3059\U+3002\U+4ED8\U+3051\U+76F4\U+3057\U+307E\U+3059\U+304B? [\U+306F\U+3044(Y)/\U+3044\U+3044\U+3048(N)] <N>: ") "Yes")))
+                 (/= (getkword "\nすでに番号が付いています。付け直しますか? [はい(Y)/いいえ(N)] <N>: ") "Yes")))
           nil)
          (t
           (if (num:tag-ename (num:get-h ent)) (setq oldh (num:get-h ent)))
@@ -595,7 +599,7 @@
     )
   )
   (vla-EndUndoMark doc)
-  (princ (strcat "\n\U+7D42\U+4E86\U+3057\U+307E\U+3057\U+305F\U+3002\U+6B21\U+306E\U+756A\U+53F7\U+306F " (num:label *num-next*) " \U+3067\U+3059\U+3002"))
+  (princ (strcat "\n終了しました。次の番号は " (num:label *num-next*) " です。"))
   (princ)
 )
 
@@ -629,17 +633,17 @@
                              (- (caddr (cadr bb)) (caddr (car bb))))))
             ;; 属性(ブロックのみ): 値が入力されていれば、測定した値より優先する
             (setq atts (if (= typ "INSERT") (num:atts (vlax-ename->vla-object ent))))
-            (if (setq nm2 (num:att-get atts "\U+54C1\U+540D")) (setq name (vl-string-translate "\"" "'" nm2)))
-            (setq w (num:size-text atts '("\U+5E45") (if sz (car sz)))
-                  d (num:size-text atts '("\U+5965\U+884C" "\U+5965\U+884C\U+304D") (if sz (cadr sz)))
-                  h (num:size-text atts '("\U+9AD8\U+3055") (if sz (caddr sz))))
+            (if (setq nm2 (num:att-get atts "品名")) (setq name (vl-string-translate "\"" "'" nm2)))
+            (setq w (num:size-text atts '("幅") (if sz (car sz)))
+                  d (num:size-text atts '("奥行" "奥行き") (if sz (cadr sz)))
+                  h (num:size-text atts '("高さ") (if sz (caddr sz))))
             ;; ブロックの、その他の属性(いずれも入力がなければ空文字)
-            (setq nfloor (num:csv-att atts "\U+968E\U+6570")
-                  narea  (num:csv-att atts "\U+30A8\U+30EA\U+30A2")
-                  nfix   (num:csv-att atts "\U+4EC0\U+5668No")
-                  ncolor (num:csv-att atts "\U+8272")
-                  ncat   (num:csv-att atts "\U+4EC0\U+5668\U+5206\U+985E")
-                  nnote  (num:csv-att atts "\U+5099\U+8003"))
+            (setq nfloor (num:csv-att atts "階数")
+                  narea  (num:csv-att atts "エリア")
+                  nfix   (num:csv-att atts "什器No")
+                  ncolor (num:csv-att atts "色")
+                  ncat   (num:csv-att atts "什器分類")
+                  nnote  (num:csv-att atts "備考"))
             (if (not val) (setq val ""))
             (setq pr (num:parse val))
             ;; row = (英字部分 番号 表示番号 名称 幅 奥行 高さ 階数 エリア 什器No 色 什器分類 備考)
@@ -655,7 +659,7 @@
 
   (cond
     ((null rows)
-     (princ "\n\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+305F\U+5BFE\U+8C61\U+304C\U+898B\U+3064\U+304B\U+308A\U+307E\U+305B\U+3093\U+3002"))
+     (princ "\n番号を付けた対象が見つかりません。"))
     (t
      (setq rows (vl-sort rows
                          '(lambda (a b)
@@ -677,15 +681,15 @@
      )
      (setq rows (reverse merged))
      (if mixed
-       (princ (strcat "\n\U+6CE8\U+610F: \U+540C\U+3058\U+756A\U+53F7\U+306A\U+306E\U+306B\U+540D\U+79F0(\U+30D6\U+30ED\U+30C3\U+30AF\U+540D\U+30FB\U+56F3\U+5F62\U+306E\U+7A2E\U+985E)\U+304C\U+9055\U+3046\U+5BFE\U+8C61\U+304C\U+3042\U+308A\U+307E\U+3059 \U+2192"
+       (princ (strcat "\n注意: 同じ番号なのに名称(ブロック名・図形の種類)が違う対象があります →"
                       (apply 'strcat
                              (mapcar '(lambda (x) (strcat " " x))
                                      (reverse mixed))))))
      ;; エリア(=番号の英字部分)ごとに、CSVを1つずつ書き出す: <ファイル名>_<エリア>.csv
-     (setq path (getfiled "\U+4FDD\U+5B58\U+5148\U+3068\U+30D5\U+30A1\U+30A4\U+30EB\U+540D(\U+30A8\U+30EA\U+30A2\U+3054\U+3068\U+306B _\U+30A8\U+30EA\U+30A2\U+540D \U+304C\U+4ED8\U+3044\U+3066\U+4FDD\U+5B58\U+3055\U+308C\U+307E\U+3059)"
+     (setq path (getfiled "保存先とファイル名(エリアごとに _エリア名 が付いて保存されます)"
                           (strcat (getvar "DWGPREFIX")
                                   (vl-filename-base (getvar "DWGNAME"))
-                                  "_\U+756A\U+53F7.csv")
+                                  "_番号.csv")
                           "csv" 1))
      (if path
        (progn
@@ -696,10 +700,10 @@
          (foreach ar areas
            (setq file (strcat (vl-filename-directory path) "/"
                               (vl-filename-base path) "_"
-                              (num:safe (if (= ar "") "\U+306A\U+3057" ar)) ".csv"))
+                              (num:safe (if (= ar "") "なし" ar)) ".csv"))
            (if (setq f (open file "w"))
              (progn
-               (write-line "No,\U+540D\U+79F0,\U+5E45(mm),\U+5965\U+884C(mm),\U+9AD8\U+3055(mm),\U+500B\U+6570,\U+968E\U+6570,\U+30A8\U+30EA\U+30A2,\U+4EC0\U+5668No,\U+8272,\U+4EC0\U+5668\U+5206\U+985E,\U+5099\U+8003" f)
+               (write-line "No,名称,幅(mm),奥行(mm),高さ(mm),個数,階数,エリア,什器No,色,什器分類,備考" f)
                (setq kinds 0 total 0)
                (foreach r rows
                  (if (= (cadr r) ar)
@@ -712,9 +716,9 @@
                                  f)
                      (setq kinds (1+ kinds) total (+ total (car r))))))
                (close f)
-               (princ (strcat "\n" (if (= ar "") "\U+306A\U+3057" ar) ": "
-                              (itoa kinds) " \U+7A2E\U+985E / \U+500B\U+6570 " (itoa total) " \U+2192 " file)))
-             (princ (strcat "\n\U+30D5\U+30A1\U+30A4\U+30EB\U+3092\U+958B\U+3051\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F(Excel\U+3067\U+958B\U+3044\U+3066\U+3044\U+307E\U+305B\U+3093\U+304B?): " file))))))
+               (princ (strcat "\n" (if (= ar "") "なし" ar) ": "
+                              (itoa kinds) " 種類 / 個数 " (itoa total) " → " file)))
+             (princ (strcat "\nファイルを開けませんでした(Excelで開いていませんか?): " file))))))
     )
   )
   (princ)
@@ -724,22 +728,22 @@
 
 ;; 追加する属性のタグ一覧(項目を変えたいときは、この一覧を書き換える)。
 ;; それぞれ、非表示・プリセット(ブロックを置くときに聞かれない)属性になる。
-(setq *numa-tags* '("\U+968E\U+6570" "\U+30A8\U+30EA\U+30A2" "\U+4EC0\U+5668No" "\U+54C1\U+540D" "\U+8272" "\U+5E45" "\U+5965\U+884C" "\U+9AD8\U+3055" "\U+6570\U+91CF" "\U+4EC0\U+5668\U+5206\U+985E" "\U+5099\U+8003"))
+(setq *numa-tags* '("階数" "エリア" "什器No" "品名" "色" "幅" "奥行" "高さ" "数量" "什器分類" "備考"))
 
-(defun c:NUMA ( / *error* doc oldecho ss i obj nm names def have e tag idx a added tot nblk anc)
+(defun c:NUMA ( / *error* doc oldecho ss i obj nm names added tot nblk)
 
   (defun *error* (msg)
     (if oldecho (setvar "CMDECHO" oldecho))
     (if doc (vl-catch-all-apply 'vla-EndUndoMark (list doc)))
     (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
-      (princ (strcat "\n\U+30A8\U+30E9\U+30FC: " msg))
+      (princ (strcat "\nエラー: " msg))
     )
     (princ)
   )
 
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
   (setq *num-acache* nil)
-  (princ "\n\U+5C5E\U+6027\U+3092\U+8FFD\U+52A0\U+3059\U+308B\U+30D6\U+30ED\U+30C3\U+30AF\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044")
+  (princ "\n属性を追加するブロックを選択してください")
   (if (setq ss (ssget '((0 . "INSERT"))))
     (progn
       ;; 選んだ対象のブロック名を、重複なく集める(動的ブロックは元のブロック名)
@@ -756,91 +760,158 @@
       (setvar "CMDECHO" 0)
       (vla-StartUndoMark doc)
       (foreach nm names
-        (setq def (vla-Item (vla-get-Blocks doc) nm))
-        (if (= (vla-get-IsXRef def) :vlax-true)
-          (princ (strcat "\n" nm ": \U+5916\U+90E8\U+53C2\U+7167\U+306E\U+305F\U+3081\U+30B9\U+30AD\U+30C3\U+30D7\U+3057\U+307E\U+3057\U+305F"))
-          (progn
-            ;; このブロックに、すでに定義されている属性のタグ
-            (setq have nil)
-            (vlax-for e def
-              (if (= (vla-get-ObjectName e) "AcDbAttributeDefinition")
-                (setq have (cons (strcase (vla-get-TagString e)) have)))
-            )
-            (setq anc (num:blk-anchor nm))
-            (setq added 0 idx 0)
-            (foreach tag *numa-tags*
-              (if (not (member (strcase tag) have))
-                (progn
-                  ;; 文字高さ125、モード9(非表示+プリセット)。基準点から下方向に、200ピッチで並べる。
-                  ;; idx は *numa-tags* の中でのその項目の順番。あとから足りない項目だけをNUMAで
-                  ;; 追加しても、各項目の行がずれたり重なったりしないようにするため。
-                  (setq a (vl-catch-all-apply
-                            'vla-AddAttribute
-                            (list def 125.0 9 tag
-                                  (vlax-3d-point (list (car anc) (- (cadr anc) (* 200.0 idx)) 0.0))
-                                  tag "")))
-                  (if (vl-catch-all-error-p a)
-                    (princ (strcat "\n" nm ": \U+300C" tag "\U+300D\U+3092\U+8FFD\U+52A0\U+3067\U+304D\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F"))
-                    (progn
-                      (vla-put-Layer a "0")
-                      (setq added (1+ added))))
-                )
-              )
-              (setq idx (1+ idx))
-            )
-            (if (> added 0)
-              (progn
-                ;; 追加した属性定義を、図面にすでにあるそのブロックに反映する
-                (command "_.ATTSYNC" "_N" nm)
-                (setq tot (+ tot added) nblk (1+ nblk))
-                (princ (strcat "\n" nm ": " (itoa added) " \U+9805\U+76EE\U+3092\U+8FFD\U+52A0\U+3057\U+3066\U+53CD\U+6620\U+3057\U+307E\U+3057\U+305F")))
-              (princ (strcat "\n" nm ": \U+3059\U+3079\U+3066\U+8FFD\U+52A0\U+6E08\U+307F\U+3067\U+3059")))
-          )
+        (setq added (num:ensure-tags nm *numa-tags*))
+        (cond
+          ((not added)
+           (princ (strcat "\n" nm ": 外部参照のためスキップしました")))
+          ((> added 0)
+           (setq tot (+ tot added) nblk (1+ nblk))
+           (princ (strcat "\n" nm ": " (itoa added) " 項目を追加して反映しました")))
+          (t
+           (princ (strcat "\n" nm ": すべて追加済みです")))
         )
       )
       (vla-EndUndoMark doc)
       (setvar "CMDECHO" oldecho)
-      (princ (strcat "\n\U+5B8C\U+4E86: " (itoa nblk) " \U+7A2E\U+985E\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+3001\U+5408\U+8A08 " (itoa tot) " \U+9805\U+76EE\U+3092\U+8FFD\U+52A0\U+3057\U+307E\U+3057\U+305F\U+3002"))
+      (princ (strcat "\n完了: " (itoa nblk) " 種類のブロックに、合計 " (itoa tot) " 項目を追加しました。"))
     )
-    (princ "\n\U+30D6\U+30ED\U+30C3\U+30AF\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")
+    (princ "\nブロックが選択されませんでした。")
   )
   (princ)
+)
+
+;; ブロック定義nmに、tags(タグ名の一覧)のうち足りないものをすべて追加する。
+;; 追加位置は num:blk-anchor の基準点から下方向へ200ピッチ、高さ125、非表示・プリセット属性。
+;; 1つでも追加したら ATTSYNC で、図面にあるそのブロックに反映する。
+;; 戻り値: 追加した項目数(0なら、すべて追加済み)。外部参照など処理できない場合は nil。
+(defun num:ensure-tags (nm tags / def have e anc a tag idx added)
+  (setq def (vla-Item (vla-get-Blocks (vla-get-ActiveDocument (vlax-get-acad-object))) nm))
+  (if (= (vla-get-IsXRef def) :vlax-true)
+    nil
+    (progn
+      (setq have nil)
+      (vlax-for e def
+        (if (= (vla-get-ObjectName e) "AcDbAttributeDefinition")
+          (setq have (cons (strcase (vla-get-TagString e)) have)))
+      )
+      ;; 外形が測れないブロック(属性だけなど)は、原点を基準点にする
+      ;; NOTE: AutoLISPの or は値ではなく T/nil を返すため、ここでは or で値を選ばない
+      (setq anc (num:blk-anchor nm))
+      (if (not anc) (setq anc (list 0.0 0.0 0.0)))
+      (setq added 0 idx (length have))
+      (foreach tag tags
+        (if (not (member (strcase tag) have))
+          (progn
+            (setq a (vl-catch-all-apply
+                      'vla-AddAttribute
+                      (list def 125.0 9 tag
+                            (vlax-3d-point (list (car anc) (- (cadr anc) (* 200.0 idx)) 0.0))
+                            tag "")))
+            (if (not (vl-catch-all-error-p a))
+              (progn
+                (vla-put-Layer a "0")
+                (setq have (cons (strcase tag) have))
+                (setq added (1+ added)))
+              (princ (strcat "\n" nm ": 「" tag "」を追加できませんでした")))
+            (setq idx (1+ idx))
+          )
+        )
+      )
+      (if (> added 0) (command "_.ATTSYNC" "_N" nm))
+      added
+    )
+  )
+)
+
+;; ブロック定義nmの属性定義を、tags(タグ名の一覧)で丸ごと置き換える。
+;; 既存の属性定義は、タグ名が一致するかどうかに関わらず、いったんすべて削除してから、
+;; tagsの項目を追加し直す(配置・高さは num:ensure-tags と同じ)。
+;; 置き換えは、図面にあるそのブロックすべてに影響する(ATTSYNCで反映)。既存の値は失われる。
+;; 戻り値: 追加した項目数。外部参照など処理できない場合は nil。
+(defun num:replace-tags (nm tags / def olds e anc tag idx a added)
+  (setq def (vla-Item (vla-get-Blocks (vla-get-ActiveDocument (vlax-get-acad-object))) nm))
+  (if (= (vla-get-IsXRef def) :vlax-true)
+    nil
+    (progn
+      ;; 既存の属性定義を集めてから削除する(列挙しながらの削除は避ける)
+      (setq olds nil)
+      (vlax-for e def
+        (if (= (vla-get-ObjectName e) "AcDbAttributeDefinition")
+          (setq olds (cons e olds))))
+      (foreach e olds (vl-catch-all-apply 'vla-Delete (list e)))
+      (setq anc (num:blk-anchor nm))
+      (if (not anc) (setq anc (list 0.0 0.0 0.0)))
+      (setq added 0 idx 0)
+      (foreach tag tags
+        (setq a (vl-catch-all-apply
+                  'vla-AddAttribute
+                  (list def 125.0 9 tag
+                        (vlax-3d-point (list (car anc) (- (cadr anc) (* 200.0 idx)) 0.0))
+                        tag "")))
+        (if (not (vl-catch-all-error-p a))
+          (progn
+            (vla-put-Layer a "0")
+            (setq added (1+ added)))
+          (princ (strcat "\n" nm ": 「" tag "」を追加できませんでした")))
+        (setq idx (1+ idx))
+      )
+      (command "_.ATTSYNC" "_N" nm)
+      added
+    )
+  )
+)
+
+;; 重複を取り除いたリストを返す(順序は保つ)
+(defun num:uniq (lst / r)
+  (foreach x lst (if (not (member x r)) (setq r (cons x r))))
+  (reverse r)
 )
 
 ;;; ---- NUMC : 属性の値を、他のブロックにコピーする -------------------
 
 ;; NUMCでコピーしないタグ(対象ごとに固有の値として残す。変えたいときはここを書き換える)。
-(setq *numc-skip* '("\U+4EC0\U+5668No"))
+(setq *numc-skip* '("什器No"))
 
-(defun c:NUMC ( / *error* doc s0 sh sObj satts ss i tEnt tObj a tag v cnt objs skipped skiptags)
+;; コピー元のブロックから、属性のタグ名(元の表記のまま)の一覧を返す
+(defun num:att-tags (obj / lst a)
+  (if (= (vla-get-HasAttributes obj) :vlax-true)
+    (foreach a (vlax-invoke obj 'GetAttributes)
+      (setq lst (cons (vla-get-TagString a) lst)))
+  )
+  (reverse lst)
+)
+
+(defun c:NUMC ( / *error* doc s0 sh sObj satts sname stags ss i tEnt tObj a tag v cnt objs skipped skiptags tcnt mism nm2 added)
 
   (defun *error* (msg)
     (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
-      (princ (strcat "\n\U+30A8\U+30E9\U+30FC: " msg))
+      (princ (strcat "\nエラー: " msg))
     )
     (princ)
   )
 
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-  (setq s0 (entsel "\n\U+30B3\U+30D4\U+30FC\U+5143\U+306E\U+30D6\U+30ED\U+30C3\U+30AF(\U+5C5E\U+6027\U+304C\U+5165\U+3063\U+3066\U+3044\U+308B\U+3082\U+306E)\U+3092\U+9078\U+629E: "))
+  (setq s0 (entsel "\nコピー元のブロック(属性が入っているもの)を選択: "))
   (cond
     ((not s0)
-     (princ "\n\U+5BFE\U+8C61\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002"))
+     (princ "\n対象が選択されませんでした。"))
     ((/= (cdr (assoc 0 (entget (car s0)))) "INSERT")
-     (princ "\n\U+30D6\U+30ED\U+30C3\U+30AF\U+3092\U+9078\U+629E\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044\U+3002"))
+     (princ "\nブロックを選択してください。"))
     (t
-     (setq sh   (cdr (assoc 5 (entget (car s0))))
-           sObj (vlax-ename->vla-object (car s0))
-           satts (num:atts sObj))
+     (setq sh    (cdr (assoc 5 (entget (car s0))))
+           sObj  (vlax-ename->vla-object (car s0))
+           sname (vla-get-EffectiveName sObj)
+           satts (num:atts sObj)
+           stags (num:att-tags sObj))
      (cond
        ((not satts)
-        (princ "\n\U+3053\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+306F\U+5C5E\U+6027\U+304C\U+3042\U+308A\U+307E\U+305B\U+3093\U+3002"))
+        (princ "\nこのブロックには属性がありません。"))
        (t
         (setq skiptags (mapcar 'strcase *numc-skip*))
-        (princ "\n\U+30B3\U+30D4\U+30FC\U+5148\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+3092\U+9078\U+629E(\U+8907\U+6570\U+53EF\U+30FB\U+7A93\U+9078\U+629E\U+3082\U+53EF)\U+3057\U+3066\U+304F\U+3060\U+3055\U+3044")
+        (princ "\nコピー先のブロックを選択(複数可・窓選択も可)してください")
         (if (setq ss (ssget '((0 . "INSERT"))))
           (progn
-            (setq i 0 cnt 0 objs 0 skipped 0)
+            (setq i 0 cnt 0 objs 0 skipped 0 mism nil)
             (repeat (sslength ss)
               (setq tEnt (ssname ss i) i (1+ i))
               (cond
@@ -848,27 +919,49 @@
                 ((= (cdr (assoc 5 (entget tEnt))) sh)
                  (setq skipped (1+ skipped)))
                 (t
-                 (setq tObj (vlax-ename->vla-object tEnt))
-                 (if (= (vla-get-HasAttributes tObj) :vlax-true)
-                   (progn
-                     (setq objs (1+ objs))
-                     (foreach a (vlax-invoke tObj 'GetAttributes)
-                       (setq tag (strcase (vla-get-TagString a)))
-                       (if (and (not (member tag skiptags))
-                                (setq v (cdr (assoc tag satts))))
-                         (progn
-                           (vla-put-TextString a v)
-                           (setq cnt (1+ cnt))))
-                     )
-                   )
-                   (setq skipped (1+ skipped)))))
+                 (setq tObj (vlax-ename->vla-object tEnt)
+                       nm2  (vla-get-EffectiveName tObj))
+                 ;; もとの属性(コピー元とは無関係なものも含む)は削除し、コピー元と同じ項目を
+                 ;; 作り直す(ブロック定義ごと=そのブロックの他のインスタンスにも反映される)
+                 (setq added (num:replace-tags nm2 stags))
+                 (if added
+                   (setq tObj (vlax-ename->vla-object tEnt))) ; ATTSYNC後の状態を取り直す
+                 (cond
+                   ((and added (= (vla-get-HasAttributes tObj) :vlax-true))
+                    (setq objs (1+ objs) tcnt 0)
+                    (foreach a (vlax-invoke tObj 'GetAttributes)
+                      (setq tag (strcase (vla-get-TagString a)))
+                      (if (and (not (member tag skiptags))
+                               (setq v (cdr (assoc tag satts))))
+                        (progn
+                          (vla-put-TextString a v)
+                          (setq cnt (1+ cnt) tcnt (1+ tcnt))))
+                    )
+                    ;; 一致するタグが1つもなかったブロック名を記録する(あとで原因を示すため)
+                    (if (= tcnt 0)
+                      (setq mism (cons nm2 mism))))
+                   (t
+                    ;; added が nil(外部参照など)、または属性を追加・取得できなかった場合
+                    (setq skipped (1+ skipped))))))
             )
-            (princ (strcat "\n" (itoa objs) " \U+500B\U+306E\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+3001\U+5408\U+8A08 " (itoa cnt) " \U+9805\U+76EE\U+3092\U+30B3\U+30D4\U+30FC\U+3057\U+307E\U+3057\U+305F\U+3002"
+            (princ (strcat "\n" (itoa objs) " 個のブロックに、合計 " (itoa cnt) " 項目をコピーしました。"
                            (if (> skipped 0)
-                             (strcat "(\U+5BFE\U+8C61\U+5916 " (itoa skipped) " \U+500B)")
+                             (strcat "(対象外 " (itoa skipped) " 個)")
                              "")))
+            ;; 1件もコピーできなかったブロックがあれば、原因がわかるようタグを一覧表示する
+            (if mism
+              (progn
+                (princ (strcat "\n一致するタグがなく、コピーできなかったブロック: "
+                               (apply (function strcat)
+                                      (mapcar (function (lambda (x) (strcat x " ")))
+                                              (num:uniq mism)))))
+                (princ (strcat "\nコピー元(" sname ")のタグ: "
+                               (apply (function strcat)
+                                      (mapcar (function (lambda (p) (strcat (car p) " ")))
+                                              satts))))
+              ))
           )
-          (princ "\n\U+30B3\U+30D4\U+30FC\U+5148\U+304C\U+9078\U+629E\U+3055\U+308C\U+307E\U+305B\U+3093\U+3067\U+3057\U+305F\U+3002")
+          (princ "\nコピー先が選択されませんでした。")
         )
        )
      )
@@ -877,5 +970,5 @@
   (princ)
 )
 
-(princ "\nNUM(\U+756A\U+53F7\U+3092\U+4ED8\U+3051\U+308B) / NUMX(\U+500B\U+6570\U+3064\U+304DCSV\U+66F8\U+304D\U+51FA\U+3057) / NUMA(\U+30D6\U+30ED\U+30C3\U+30AF\U+306B\U+5C5E\U+6027\U+3092\U+8FFD\U+52A0) / NUMC(\U+5C5E\U+6027\U+306E\U+30B3\U+30D4\U+30FC) \U+3092\U+8AAD\U+307F\U+8FBC\U+307F\U+307E\U+3057\U+305F\U+3002")
+(princ "\nNUM(番号を付ける) / NUMX(個数つきCSV書き出し) / NUMA(ブロックに属性を追加) / NUMC(属性のコピー) を読み込みました。")
 (princ)
