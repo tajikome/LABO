@@ -1,5 +1,5 @@
 ;;; ============================================================
-;;;  QS - クイック選択拡張 (v8: フルスクリーン展開時のマウスホイール対応・項目欄をフルスクリーン展開・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
+;;;  QS - クイック選択拡張 (v9: [7]回転角度を追加・フルスクリーン展開時のマウスホイール対応・項目欄をフルスクリーン展開・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
 ;;;
 ;;;  必要なファイルは QS.lsp 1本だけです。コマンド名は "QS" です。
 ;;;  PowerShell(WPF)のダイアログ用スクリプトはこのファイルの中に
@@ -28,6 +28,17 @@
 ;;;     一覧の枠がスクロールバーを持たずに際限なく伸びてしまい、マウスホイールで
 ;;;     のスクロールが効かなくなる。あらかじめ計算した高さを与えることで、
 ;;;     項目数が多いときは一覧の中でスクロール(マウスホイール対応)するようにした。
+;;;
+;;;  v9での変更点:
+;;;   ・項目欄に [7] 回転角度 を追加。DXFグループコード50(ラジアン)を
+;;;     度数に変換し、0〜360度の範囲に正規化のうえ小数点2桁で丸めて
+;;;     件数付きで一覧表示する(例: "90.00° (3件)")。
+;;;     ※ 丸めた度数をそのままssgetフィルタの値(ラジアンへ逆変換)として
+;;;     使うため、表示上は同じ角度でも実際のデータがごく僅かに異なる
+;;;     (例: スクリプト等で直接ラジアン値を与えて作成された場合)と、
+;;;     一覧上は同じに見えてもすべては選択されないことがある。
+;;;     「90」「180」など、コマンドで角度を直接入力して回転させた
+;;;     オブジェクト同士であれば通常は同じ値になり問題ない。
 ;;;     小さい画面ではみ出さないよう、
 ;;;     作業領域に合わせて幅・高さの上限を自動調整
 ;;;   ・ブロック名/文字列内容が1種類だけのとき、先頭1文字しか表示
@@ -69,9 +80,9 @@
 ;; (type layer color ltype blk txt range result errormsg) の
 ;; 9要素リストを返す
 (defun qse-read-output (path / fn line cur
-                            outType outLayer outColor outLtype outBlk outTxt
+                            outType outLayer outColor outLtype outBlk outTxt outAngle
                             outRange outResult outErr)
-  (setq outType '() outLayer '() outColor '() outLtype '() outBlk '() outTxt '()
+  (setq outType '() outLayer '() outColor '() outLtype '() outBlk '() outTxt '() outAngle '()
         outRange nil outResult nil outErr nil cur nil)
   (setq fn (open path "r"))
   (if fn
@@ -84,6 +95,7 @@
           ((= line "###LTYPE###")    (setq cur 'LTYPE))
           ((= line "###BLOCK###")    (setq cur 'BLOCK))
           ((= line "###TEXT###")     (setq cur 'TEXT))
+          ((= line "###ANGLE###")    (setq cur 'ANGLE))
           ((= line "###RANGE###")    (setq cur 'RANGE))
           ((= line "###RESULT###")   (setq cur 'RESULT))
           ((= line "###ERRORMSG###") (setq cur 'ERRORMSG))
@@ -95,6 +107,7 @@
              ((eq cur 'LTYPE)    (setq outLtype  (cons line outLtype)))
              ((eq cur 'BLOCK)    (setq outBlk    (cons line outBlk)))
              ((eq cur 'TEXT)     (setq outTxt    (cons line outTxt)))
+             ((eq cur 'ANGLE)    (setq outAngle  (cons line outAngle)))
              ((eq cur 'RANGE)    (setq outRange  line))
              ((eq cur 'RESULT)   (setq outResult line))
              ((eq cur 'ERRORMSG) (setq outErr    line))
@@ -106,7 +119,7 @@
     )
   )
   (list (reverse outType) (reverse outLayer) (reverse outColor) (reverse outLtype)
-        (reverse outBlk) (reverse outTxt) outRange outResult outErr)
+        (reverse outBlk) (reverse outTxt) (reverse outAngle) outRange outResult outErr)
 )
 
 ;; ---------- 埋め込みPowerShell(WPF)スクリプトの書き出し ----------
@@ -167,6 +180,7 @@
   (write-line "        [string[]]$SelLtype," fn)
   (write-line "        [string[]]$SelBlk," fn)
   (write-line "        [string[]]$SelTxt," fn)
+  (write-line "        [string[]]$SelAngle," fn)
   (write-line "        [string]$Range," fn)
   (write-line "        [string]$ErrorMsg" fn)
   (write-line "    )" fn)
@@ -183,6 +197,8 @@
   (write-line "    if ($SelBlk)   { foreach ($v in $SelBlk)   { $lines.Add($v) } }" fn)
   (write-line "    $lines.Add(\"###TEXT###\")" fn)
   (write-line "    if ($SelTxt)   { foreach ($v in $SelTxt)   { $lines.Add($v) } }" fn)
+  (write-line "    $lines.Add(\"###ANGLE###\")" fn)
+  (write-line "    if ($SelAngle) { foreach ($v in $SelAngle) { $lines.Add($v) } }" fn)
   (write-line "    $lines.Add(\"###RANGE###\")" fn)
   (write-line "    if ($Range) { $lines.Add($Range) }" fn)
   (write-line "    $lines.Add(\"###RESULT###\")" fn)
@@ -204,6 +220,8 @@
   (write-line "    $txtList     = Get-Section $data 'TEXT'" fn)
   (write-line "    $blkCountList = Get-Section $data 'BLOCKCOUNT'" fn)
   (write-line "    $txtCountList = Get-Section $data 'TEXTCOUNT'" fn)
+  (write-line "    $angleList      = Get-Section $data 'ANGLE'" fn)
+  (write-line "    $angleCountList = Get-Section $data 'ANGLECOUNT'" fn)
   (write-line "" fn)
   (write-line "    # オブジェクトタイプは \"DXFコード|表示ラベル\" の形式で来るので分割する" fn)
   (write-line "    # (DXFのエンティティ種別名は | を含み得ないため区切り文字として安全)" fn)
@@ -233,6 +251,12 @@
   (write-line "        $cnt = '1'" fn)
   (write-line "        if ($idx -lt $txtCountList.Count) { $cnt = $txtCountList[$idx] }" fn)
   (write-line "        $txtDisplays.Add(\"$($txtList[$idx]) ($($cnt)件)\")" fn)
+  (write-line "    }" fn)
+  (write-line "    $angleDisplays = New-Object System.Collections.Generic.List[string]" fn)
+  (write-line "    for ($idx = 0; $idx -lt $angleList.Count; $idx++) {" fn)
+  (write-line "        $cnt = '1'" fn)
+  (write-line "        if ($idx -lt $angleCountList.Count) { $cnt = $angleCountList[$idx] }" fn)
+  (write-line "        $angleDisplays.Add(\"$($angleList[$idx])\" + [char]0xB0 + \" ($($cnt)件)\")" fn)
   (write-line "    }" fn)
   (write-line "" fn)
   (write-line "    # ============================================================" fn)
@@ -692,6 +716,12 @@
   (write-line "        [void]$colRight.Children.Add($cardTxt.Card)" fn)
   (write-line "    }" fn)
   (write-line "" fn)
+  (write-line "    $cardAngle = $null" fn)
+  (write-line "    if ($angleList.Count -gt 0) {" fn)
+  (write-line "        $cardAngle = New-SectionCard -Title \"[7] 回転角度\" -Values $angleList -Displays $angleDisplays -HasSearch $false -AccentColor \"#5C6BC0\" -Res $window.Resources -Overlay $expandOverlay -OverlayGrid $overlayGrid -MaxDialogHeight $window.MaxHeight" fn)
+  (write-line "        [void]$colRight.Children.Add($cardAngle.Card)" fn)
+  (write-line "    }" fn)
+  (write-line "" fn)
   (write-line "    $script:written = $false" fn)
   (write-line "" fn)
   (write-line "    # ListBoxItemでラップされた選択済み項目から、表示用ラベルではなく" fn)
@@ -709,6 +739,8 @@
   (write-line "        if ($cardBlk) { $selBlk = @(Get-TagValues $cardBlk.ListBox.SelectedItems) }" fn)
   (write-line "        $selTxt = @()" fn)
   (write-line "        if ($cardTxt) { $selTxt = @(Get-TagValues $cardTxt.ListBox.SelectedItems) }" fn)
+  (write-line "        $selAngle = @()" fn)
+  (write-line "        if ($cardAngle) { $selAngle = @(Get-TagValues $cardAngle.ListBox.SelectedItems) }" fn)
   (write-line "        if ($radioAll.IsChecked) { $range = \"all\" }" fn)
   (write-line "        elseif ($radioPolygon.IsChecked) { $range = \"polygon\" }" fn)
   (write-line "        else { $range = \"window\" }" fn)
@@ -720,6 +752,7 @@
   (write-line "            -SelLtype @(Get-TagValues $cardLtype.ListBox.SelectedItems) `" fn)
   (write-line "            -SelBlk   $selBlk `" fn)
   (write-line "            -SelTxt   $selTxt `" fn)
+  (write-line "            -SelAngle $selAngle `" fn)
   (write-line "            -Range    $range `" fn)
   (write-line "            -ErrorMsg $null" fn)
   (write-line "        $script:written = $true" fn)
@@ -748,14 +781,14 @@
   (write-line "    $btnClose.Add_Click({ Save-Result \"CANCEL\"; $window.Close() })" fn)
   (write-line "" fn)
   (write-line "    $btnReset.Add_Click({" fn)
-  (write-line "        foreach ($c in @($cardType, $cardLayer, $cardColor, $cardLtype, $cardBlk, $cardTxt)) {" fn)
+  (write-line "        foreach ($c in @($cardType, $cardLayer, $cardColor, $cardLtype, $cardBlk, $cardTxt, $cardAngle)) {" fn)
   (write-line "            if ($c) { $c.ListBox.SelectedItems.Clear() }" fn)
   (write-line "        }" fn)
   (write-line "        $radioAll.IsChecked = $true" fn)
   (write-line "    })" fn)
   (write-line "" fn)
   (write-line "    $btnSelectAllGlobal.Add_Click({" fn)
-  (write-line "        foreach ($c in @($cardType, $cardLayer, $cardColor, $cardLtype, $cardBlk, $cardTxt)) {" fn)
+  (write-line "        foreach ($c in @($cardType, $cardLayer, $cardColor, $cardLtype, $cardBlk, $cardTxt, $cardAngle)) {" fn)
   (write-line "            if ($c) {" fn)
   (write-line "                $c.ListBox.SelectedItems.Clear()" fn)
   (write-line "                foreach ($i in $c.ListBox.Items) { [void]$c.ListBox.SelectedItems.Add($i) }" fn)
@@ -772,7 +805,7 @@
   (write-line "}" fn)
   (write-line "catch {" fn)
   (write-line "    Write-ResultFile -Path $OutputPath -Status \"ERROR\" `" fn)
-  (write-line "        -SelType @() -SelLayer @() -SelColor @() -SelLtype @() -SelBlk @() -SelTxt @() `" fn)
+  (write-line "        -SelType @() -SelLayer @() -SelColor @() -SelLtype @() -SelBlk @() -SelTxt @() -SelAngle @() `" fn)
   (write-line "        -Range $null -ErrorMsg $_.Exception.Message" fn)
   (write-line "}" fn)
   (close fn)
@@ -854,24 +887,40 @@
     (progn
       (setq subLst (list '(-4 . "<OR")))
       (foreach itemVal valList
-        (if (= dxfCode 62)
-          (if (= itemVal "256 (ByLayer)")
-            (setq subLst (append subLst (list '(62 . 256))))
-            (setq subLst (append subLst (list (cons 62 (atoi itemVal)))))
+        (cond
+          ((= dxfCode 62)
+           (if (= itemVal "256 (ByLayer)")
+             (setq subLst (append subLst (list '(62 . 256))))
+             (setq subLst (append subLst (list (cons 62 (atoi itemVal)))))
+           )
           )
-          (setq subLst (append subLst (list (cons dxfCode itemVal))))
+          ;; 回転角度: 度数(文字列)をラジアンに変換してから渡す
+          ((= dxfCode 50)
+           (setq subLst (append subLst (list (cons 50 (* (atof itemVal) (/ pi 180.0))))))
+          )
+          (T
+           (setq subLst (append subLst (list (cons dxfCode itemVal))))
+          )
         )
       )
       (append subLst (list '(-4 . "OR>")))
     )
     (progn
       (setq itemVal (car valList))
-      (if (= dxfCode 62)
-        (if (= itemVal "256 (ByLayer)")
-          (list '(62 . 256))
-          (list (cons 62 (atoi itemVal)))
+      (cond
+        ((= dxfCode 62)
+         (if (= itemVal "256 (ByLayer)")
+           (list '(62 . 256))
+           (list (cons 62 (atoi itemVal)))
+         )
         )
-        (list (cons dxfCode itemVal))
+        ;; 回転角度: 度数(文字列)をラジアンに変換してから渡す
+        ((= dxfCode 50)
+         (list (cons 50 (* (atof itemVal) (/ pi 180.0))))
+        )
+        (T
+         (list (cons dxfCode itemVal))
+        )
       )
     )
   )
@@ -929,9 +978,10 @@
 (defun c:QS ( / ssBase i entData objType layerName colorVal ltypeVal blkName txtContent
                    typeList layerList colorList ltypeList blkList txtList
                    blkCountAlist txtCountAlist blkCountList txtCountList
+                   rotVal rotDeg rotKey angleCountAlist angleList angleCountList
                    attEnt attData attTxt
                    inFile outFile ps1File fn result
-                   selTypes selLayers selColors selLtypes selBlks selTxts
+                   selTypes selLayers selColors selLtypes selBlks selTxts selAngles
                    selRange selResult errMsg
                    filterList ssFilter polyPts lastRange )
   (vl-load-com)
@@ -944,7 +994,7 @@
     (progn (princ "\nオブジェクトが選択されませんでした。中止します。") (princ))
     (progn
       (setq typeList '() layerList '() colorList '() ltypeList '() blkList '() txtList '())
-      (setq blkCountAlist '() txtCountAlist '())
+      (setq blkCountAlist '() txtCountAlist '() angleCountAlist '())
 
       (repeat (setq i (sslength ssBase))
         (setq entData (entget (ssname ssBase (setq i (1- i)))))
@@ -965,6 +1015,20 @@
         (if (null ltypeVal) (setq ltypeVal "ByLayer"))
         (if (not (member ltypeVal ltypeList))
           (setq ltypeList (cons ltypeVal ltypeList)))
+
+        ;; 回転角度(DXFグループコード50、ラジアン)を度数に変換し、
+        ;; 0〜360度の範囲に正規化して小数点2桁に丸めたうえで件数集計する。
+        ;; 回転の概念がないオブジェクト(LINE/CIRCLEなど)は単に無視される
+        (setq rotVal (cdr (assoc 50 entData)))
+        (if rotVal
+          (progn
+            (setq rotDeg (* rotVal (/ 180.0 pi)))
+            (while (< rotDeg 0.0)    (setq rotDeg (+ rotDeg 360.0)))
+            (while (>= rotDeg 360.0) (setq rotDeg (- rotDeg 360.0)))
+            (setq rotKey (rtos rotDeg 2 2))
+            (setq angleCountAlist (qse-count-inc angleCountAlist rotKey))
+          )
+        )
 
         ;; ブロック参照: ブロック名を件数付きで集計する。
         ;; さらに、そのブロック参照に属性(ATTRIB)がぶら下がっている場合は
@@ -1035,6 +1099,13 @@
         (mapcar '(lambda (v) (itoa (cdr (assoc v txtCountAlist)))) txtList)
       )
 
+      (setq angleList
+        (vl-sort (mapcar 'car angleCountAlist) '(lambda (a b) (< (atof a) (atof b))))
+      )
+      (setq angleCountList
+        (mapcar '(lambda (v) (itoa (cdr (assoc v angleCountAlist)))) angleList)
+      )
+
       ;; ---------- 2. 中間ファイルの準備と書き出し ----------
       (setq inFile  (vl-filename-mktemp "qse_in.txt"))
       (setq outFile (vl-filename-mktemp "qse_out.txt"))
@@ -1057,6 +1128,8 @@
       (if blkList (qse-write-section fn "BLOCKCOUNT" blkCountList))
       (if txtList (qse-write-section fn "TEXT"  txtList))
       (if txtList (qse-write-section fn "TEXTCOUNT" txtCountList))
+      (if angleList (qse-write-section fn "ANGLE" angleList))
+      (if angleList (qse-write-section fn "ANGLECOUNT" angleCountList))
       (qse-write-section fn "RANGE" (list lastRange))
       (close fn)
 
@@ -1078,9 +1151,10 @@
           (setq selLtypes (nth 3 result))
           (setq selBlks   (nth 4 result))
           (setq selTxts   (nth 5 result))
-          (setq selRange  (nth 6 result))
-          (setq selResult (nth 7 result))
-          (setq errMsg    (nth 8 result))
+          (setq selAngles (nth 6 result))
+          (setq selRange  (nth 7 result))
+          (setq selResult (nth 8 result))
+          (setq errMsg    (nth 9 result))
 
           (cond
             ((= selResult "ERROR")
@@ -1103,6 +1177,7 @@
              (if selLtypes (setq filterList (append filterList (qse-make-subfilter 6 selLtypes))))
              (if selBlks   (setq filterList (append filterList (qse-make-subfilter 2 selBlks))))
              (if selTxts   (setq filterList (append filterList (qse-make-subfilter 1 selTxts))))
+             (if selAngles (setq filterList (append filterList (qse-make-subfilter 50 selAngles))))
 
              (cond
                ((= selRange "all")
@@ -1150,5 +1225,5 @@
   )
   (princ)
 )
-(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v8:フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
+(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v9:[7]回転角度を追加・フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
 (princ)
