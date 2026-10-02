@@ -14,6 +14,7 @@
 ;;;          属性(幅・奥行・高さ・品名)に入力があれば、測定値より優先する
 ;;;          出力時に、分けない/エリア(属性)ごと/階数(属性)ごと、のいずれかを確認する
 ;;;          (番号の英字部分では分けない)
+;;;          ブロック内にTRI150の三角形(一辺150)があれば、サイズ計算から除外する
 ;;;   NUMA : 既存のブロックの属性を、標準の項目(什器No・階数・エリア・品名・幅・
 ;;;          奥行・高さ・個数・什器分類・色・備考)で作り直す(既存の属性はいった
 ;;;          ん削除してから作成。NUMCのnum:replace-tagsと同じ方式)。図面に反映
@@ -49,7 +50,8 @@
       *num-tstyle* "ASA"         ; 文字(TEXT)タグの文字スタイル(なければ現在のスタイルを使う)
       *num-th*     250.0         ; 文字(TEXT)タグの文字高さ
       *num-mark-len* 100.0       ; ブロック内にこの長さの線分があれば、奥行き調整のマークとみなす
-      *num-mark-sub* 50.0)       ; その線分がある場合、奥行きからこの値を引く
+      *num-mark-sub* 50.0        ; その線分がある場合、奥行きからこの値を引く
+      *num-tri-len*  150.0)      ; 一辺がこの長さの三角形(TRI150)は、サイズ計算から除外する
 
 ;;; ---- 補助関数 ------------------------------------------------
 
@@ -74,7 +76,9 @@
                         blkname)))
       (if (not (vl-catch-all-error-p def))
         (vlax-for e def
-          (if (/= (vla-get-ObjectName e) "AcDbAttributeDefinition")
+          ;; 属性定義と、TRI150の三角形マーカーは、サイズ計算から除外する
+          (if (and (/= (vla-get-ObjectName e) "AcDbAttributeDefinition")
+                   (not (num:tri-p e)))
             (if (not (vl-catch-all-error-p
                        (vl-catch-all-apply 'vla-GetBoundingBox (list e 'mn 'mx))))
               (progn
@@ -117,6 +121,39 @@
                            0.0))))
       (setq *num-acache* (cons (cons blkname best) *num-acache*))
       best
+    )
+  )
+)
+
+;; e が、一辺 *num-tri-len* の閉じた三角形(頂点3つ・弧なしのLWPOLYLINE)なら T を返す。
+;; TRI150コマンドで描いた逆三角形を見分けるためのもので、サイズ計算から除外する対象になる。
+(defun num:tri-p (e / ed a pts n i p1 p2 bulge ok)
+  (setq ed (entget (vlax-vla-object->ename e)))
+  (cond
+    ((/= (cdr (assoc 0 ed)) "LWPOLYLINE") nil)
+    ((= (logand (cdr (assoc 70 ed)) 1) 0) nil) ; 閉じていないポリラインは対象外
+    (t
+     (setq pts nil bulge nil)
+     (foreach a ed
+       (cond
+         ((= (car a) 10) (setq pts (cons (cdr a) pts)))
+         ((and (= (car a) 42) (> (abs (cdr a)) 0.0001)) (setq bulge T))
+       )
+     )
+     (setq pts (reverse pts) n (length pts))
+     (cond
+       (bulge nil)
+       ((/= n 3) nil)
+       (t
+        (setq ok T i 0)
+        (repeat n
+          (setq p1 (nth i pts) p2 (nth (rem (1+ i) n) pts))
+          (if (> (abs (- (distance p1 p2) *num-tri-len*)) 0.5) (setq ok nil))
+          (setq i (1+ i))
+        )
+        ok
+       )
+     )
     )
   )
 )
