@@ -5,16 +5,19 @@
 ;;;          番号は英字付き(X1、Y1...)も可。開始時に英字だけ入力すると、
 ;;;          その英字の中で図面にある最大の番号の続きから始まる
 ;;;          同じ番号を複数の対象に付けるには、K(固定)かM(複数選択)を使う
+;;;          対象がブロックで、属性「什器No」を持っていれば、その値を番号に自動で合わせる
 ;;;   NUMX : 番号ごとに、No・名称・幅・奥行・高さ・個数をCSVに書き出す
 ;;;          個数 = 同じ番号が付いた対象の数
 ;;;          サイズは、ブロックなら定義の外形×拡大率(回転は打ち消す)、
 ;;;          それ以外は軸に平行な外形。ブロック内に長さ *num-mark-len*(100)
 ;;;          の線分があれば、奥行きから *num-mark-sub*(50)を引く
 ;;;          属性(幅・奥行・高さ・品名)に入力があれば、測定値より優先する
-;;;          エリア(=番号の英字部分)ごとに、CSVを分けて書き出す
-;;;   NUMA : 既存のブロックに、標準の属性(階数・エリア・什器No・品名・色・幅・
-;;;          奥行・高さ・数量・什器分類・備考)をまとめて追加し、図面に反映する
-;;;          (ATTSYNC)。項目を変えたいときは *numa-tags* を書き換える。
+;;;          出力時に、分けない/エリア(属性)ごと/階数(属性)ごと、のいずれかを確認する
+;;;          (番号の英字部分では分けない)
+;;;   NUMA : 既存のブロックの属性を、標準の項目(什器No・階数・エリア・品名・幅・
+;;;          奥行・高さ・個数・什器分類・色・備考)で作り直す(既存の属性はいった
+;;;          ん削除してから作成。NUMCのnum:replace-tagsと同じ方式)。図面に反映
+;;;          する(ATTSYNC)。項目を変えたいときは *numa-tags* を書き換える。
 ;;;          配置位置: ブロックの最下部にある「中点」(POINT)があればそこ、
 ;;;          なければ最下辺の中央。そこから下方向へ200ピッチ、文字高さ125
 ;;;   NUMC : 1つのブロックの属性値を、他のブロックへコピーする。コピー先の
@@ -44,7 +47,7 @@
       *num-blk*    "NUM_TAG"     ; タグ用ブロックの名前(表示形式がBLOCKのときだけ使う)
       *num-lay*    "ナンバリング"  ; 番号タグの画層(すでにある画層は、そのまま使う)
       *num-tstyle* "ASA"         ; 文字(TEXT)タグの文字スタイル(なければ現在のスタイルを使う)
-      *num-th*     400.0         ; 文字(TEXT)タグの文字高さ
+      *num-th*     250.0         ; 文字(TEXT)タグの文字高さ
       *num-mark-len* 100.0       ; ブロック内にこの長さの線分があれば、奥行き調整のマークとみなす
       *num-mark-sub* 50.0)       ; その線分がある場合、奥行きからこの値を引く
 
@@ -187,6 +190,12 @@
   (if v (vl-string-translate "\"" "'" v) "")
 )
 
+;; 「個数」属性の値を数値として返す。入力がない・数値として読めない場合は 1
+(defun num:att-qty (atts / v n)
+  (setq v (num:att-get atts "個数"))
+  (if (and v (setq n (num:att-num v))) n 1.0)
+)
+
 ;; 「1800」「 1800 」「1,800」「1800mm」 -> 1800.0 。それ以外は nil
 (defun num:att-num (str / s i)
   (setq s (vl-string-trim " " str))
@@ -259,6 +268,17 @@
         *num-next*   (if (cadddr p)
                        (cadr p)
                        (1+ (num:max-no (car p)))))
+)
+
+;; ブロックの属性「什器No」があれば、その値を番号の表示文字txtに合わせる
+(defun num:sync-fixno (ent txt / obj a)
+  (if (and (= (cdr (assoc 0 (entget ent))) "INSERT")
+           (= (vla-get-HasAttributes (setq obj (vlax-ename->vla-object ent))) :vlax-true))
+    (foreach a (vlax-invoke obj 'GetAttributes)
+      (if (= (strcase (vla-get-TagString a)) "什器NO")
+        (vla-put-TextString a txt)))
+  )
+  (princ) ; 戻り値は使わない
 )
 
 ;; 図面にある(生きている)タグのうち、指定した英字部分で使われている最大の番号を返す(なければ0)
@@ -451,6 +471,7 @@
        ((and tag
              (setq h (cdr (assoc 5 (entget tag))))
              (num:put-h ent h))
+        (num:sync-fixno ent txt)
         (list ent tag oldh))
        (t
         (if tag (entdel tag))
@@ -477,7 +498,7 @@
   (or *num-width* (setq *num-width* 0))
   (or *num-style* (setq *num-style* "TEXT"))
   (or *num-r* (setq *num-r* 150.0))
-  (or *num-th* (setq *num-th* 400.0))
+  (or *num-th* (setq *num-th* 250.0))
   (setq *num-hold* nil)
 
   (setq s0 (getstring (strcat "\n開始番号(例: X1 / 英字だけなら続きの番号) <" (num:label *num-next*) ">: ")))
@@ -605,7 +626,7 @@
 
 ;;; ---- NUMX : 番号付きの対象をCSVに書き出す -------------------------
 
-(defun c:NUMX ( / ss i ent ed tag typ name bb sz val pr atts nm2 w d h nfloor narea nfix ncolor ncat nnote rows merged m mixed path f r areas ar file kinds total)
+(defun c:NUMX ( / ss i ent ed tag typ name bb sz val pr atts nm2 w d h qty nfloor narea ncolor nnote ncat rows merged m mixed s3 split path groups gl grp f r file kinds total)
 
   (setq *num-bcache* nil *num-mcache* nil)
   ;; 番号が付いた対象ごとに、1行分のデータを集める
@@ -637,19 +658,20 @@
             (setq w (num:size-text atts '("幅") (if sz (car sz)))
                   d (num:size-text atts '("奥行" "奥行き") (if sz (cadr sz)))
                   h (num:size-text atts '("高さ") (if sz (caddr sz))))
+            ;; 個数(属性): 入力がなければ 1 としてカウントする
+            (setq qty (num:att-qty atts))
             ;; ブロックの、その他の属性(いずれも入力がなければ空文字)
             (setq nfloor (num:csv-att atts "階数")
                   narea  (num:csv-att atts "エリア")
-                  nfix   (num:csv-att atts "什器No")
                   ncolor (num:csv-att atts "色")
-                  ncat   (num:csv-att atts "什器分類")
-                  nnote  (num:csv-att atts "備考"))
+                  nnote  (num:csv-att atts "備考")
+                  ncat   (num:csv-att atts "什器分類"))
             (if (not val) (setq val ""))
             (setq pr (num:parse val))
-            ;; row = (英字部分 番号 表示番号 名称 幅 奥行 高さ 階数 エリア 什器No 色 什器分類 備考)
+            ;; row = (英字部分 番号 表示番号(什器No) 名称 幅 奥行 高さ 個数 階数 エリア 色 備考 什器分類)
             (setq rows
                   (cons (list (strcase (car pr)) (cadr pr) val name
-                              w d h nfloor narea nfix ncolor ncat nnote)
+                              w d h qty nfloor narea ncolor nnote ncat)
                         rows))
           )
         )
@@ -665,8 +687,8 @@
                          '(lambda (a b)
                             (or (< (car a) (car b))
                                 (and (= (car a) (car b)) (< (cadr a) (cadr b)))))))
-     ;; 同じ番号を持つ対象をまとめる。個数は、その番号を持つ対象の数。
-     ;; サイズ・名称は、最初の1つの値を使う。まとめた1件 = (個数 英字部分 番号 表示番号 名称 幅 奥行 高さ)
+     ;; 同じ番号を持つ対象をまとめる。個数は、各対象の「個数」属性の合計(未入力は1)。
+     ;; サイズ・名称は、最初の1つの値を使う。まとめた1件 = (個数 英字部分 番号 表示番号(什器No) 名称 幅 奥行 高さ ...)
      (setq merged nil mixed nil)
      (foreach r rows
        (setq m (car merged))
@@ -675,9 +697,9 @@
           (if (and (/= (cadddr r) (nth 4 m))
                    (not (member (cadddr m) mixed)))
             (setq mixed (cons (cadddr m) mixed)))
-          (setq merged (cons (cons (1+ (car m)) (cdr m)) (cdr merged))))
+          (setq merged (cons (cons (+ (car m) (nth 7 r)) (cdr m)) (cdr merged))))
          (t
-          (setq merged (cons (cons 1 r) merged))))
+          (setq merged (cons (cons (nth 7 r) r) merged))))
      )
      (setq rows (reverse merged))
      (if mixed
@@ -685,39 +707,52 @@
                       (apply 'strcat
                              (mapcar '(lambda (x) (strcat " " x))
                                      (reverse mixed))))))
-     ;; エリア(=番号の英字部分)ごとに、CSVを1つずつ書き出す: <ファイル名>_<エリア>.csv
-     (setq path (getfiled "保存先とファイル名(エリアごとに _エリア名 が付いて保存されます)"
+     ;; 分けて出力するかどうかを確認する。分ける場合は、属性「エリア」か「階数」の値ごとに
+     ;; CSVを分ける(番号の英字部分では分けない)。わかれる値の列位置: エリア=10、階数=9
+     (initget "None Area Floor")
+     (setq s3 (getkword "\nタブ(ファイル)を分けますか? [分けない(N)/エリア(A)/階数(F)] <分けない>: "))
+     (setq split (cond ((= s3 "Area") 10) ((= s3 "Floor") 9) (t nil)))
+     (setq path (getfiled (if split
+                            "保存先とファイル名(グループごとに _グループ名 が付いて保存されます)"
+                            "保存先とファイル名")
                           (strcat (getvar "DWGPREFIX")
                                   (vl-filename-base (getvar "DWGNAME"))
                                   "_番号.csv")
                           "csv" 1))
      (if path
        (progn
-         (setq areas nil)
-         (foreach r rows
-           (if (not (member (cadr r) areas))
-             (setq areas (append areas (list (cadr r))))))
-         (foreach ar areas
-           (setq file (strcat (vl-filename-directory path) "/"
-                              (vl-filename-base path) "_"
-                              (num:safe (if (= ar "") "なし" ar)) ".csv"))
+         (if split
+           (progn
+             (setq gl nil)
+             (foreach r rows
+               (if (not (member (nth split r) gl))
+                 (setq gl (append gl (list (nth split r))))))
+             (setq groups gl))
+           (setq groups (list nil)) ; 分けない場合は、全件をまとめた1グループ
+         )
+         (foreach grp groups
+           (setq file (if split
+                        (strcat (vl-filename-directory path) "/"
+                                (vl-filename-base path) "_"
+                                (num:safe (if (= grp "") "なし" grp)) ".csv")
+                        path))
            (if (setq f (open file "w"))
              (progn
-               (write-line "No,名称,幅(mm),奥行(mm),高さ(mm),個数,階数,エリア,什器No,色,什器分類,備考" f)
+               (write-line "什器No,名称,幅(mm),奥行(mm),高さ(mm),個数,階数,エリア,什器分類,色,備考" f)
                (setq kinds 0 total 0)
                (foreach r rows
-                 (if (= (cadr r) ar)
+                 (if (or (not split) (= (nth split r) grp))
                    (progn
                      (write-line (strcat (cadddr r) ",\"" (nth 4 r) "\","
                                          (nth 5 r) "," (nth 6 r) "," (nth 7 r) ","
-                                         (itoa (car r)) ",\""
-                                         (nth 8 r) "\",\"" (nth 9 r) "\",\"" (nth 10 r)
-                                         "\",\"" (nth 11 r) "\",\"" (nth 12 r) "\",\"" (nth 13 r) "\"")
+                                         (itoa (fix (+ (car r) 0.5))) ",\""
+                                         (nth 9 r) "\",\"" (nth 10 r) "\",\"" (nth 13 r)
+                                         "\",\"" (nth 11 r) "\",\"" (nth 12 r) "\"")
                                  f)
                      (setq kinds (1+ kinds) total (+ total (car r))))))
                (close f)
-               (princ (strcat "\n" (if (= ar "") "なし" ar) ": "
-                              (itoa kinds) " 種類 / 個数 " (itoa total) " → " file)))
+               (princ (strcat "\n" (if split (strcat (if (= grp "") "なし" grp) ": ") "")
+                              (itoa kinds) " 種類 / 個数 " (itoa (fix (+ total 0.5))) " → " file)))
              (princ (strcat "\nファイルを開けませんでした(Excelで開いていませんか?): " file))))))
     )
   )
@@ -728,7 +763,7 @@
 
 ;; 追加する属性のタグ一覧(項目を変えたいときは、この一覧を書き換える)。
 ;; それぞれ、非表示・プリセット(ブロックを置くときに聞かれない)属性になる。
-(setq *numa-tags* '("階数" "エリア" "什器No" "品名" "色" "幅" "奥行" "高さ" "数量" "什器分類" "備考"))
+(setq *numa-tags* '("什器No" "階数" "エリア" "品名" "幅" "奥行" "高さ" "個数" "什器分類" "色" "備考"))
 
 (defun c:NUMA ( / *error* doc oldecho ss i obj nm names added tot nblk)
 
@@ -760,7 +795,7 @@
       (setvar "CMDECHO" 0)
       (vla-StartUndoMark doc)
       (foreach nm names
-        (setq added (num:ensure-tags nm *numa-tags*))
+        (setq added (num:replace-tags nm *numa-tags*))
         (cond
           ((not added)
            (princ (strcat "\n" nm ": 外部参照のためスキップしました")))
