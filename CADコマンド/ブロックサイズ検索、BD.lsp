@@ -235,61 +235,73 @@
 (defun c:BD ( / w d sset final-ss i e nm dim cache c)
   (vl-load-com)
 
-  (princ "\n※ 幅・奥行きを指定すると、図面全体から該当サイズのブロックを検索します。")
-  (princ "\n   両方スキップ(Enter)すると、検索範囲の指定に進みます。")
-  (setq w (getreal "\n検索する「幅」を入力 [スキップはEnter]: "))
-  (setq d (getreal "\n検索する「奥行き」を入力 [スキップはEnter]: "))
-
-  (if (or w d)
-    ;; ---- 幅・奥行き指定あり: 図面全体から検索 ----
+  ;; 先に選択しているブロックがあれば、それを計測して終了
+  (setq sset (ssget "I" '((0 . "INSERT"))))
+  (if (and sset (> (sslength sset) 0))
     (progn
-      (setq sset (bld_select_all))
-      (if (or (null sset) (= (sslength sset) 0))
-        (princ "\n図面内にブロックがありません。")
+      (sssetfirst nil sset)
+      (princ "\n\n=== 【選択中のブロックの計測結果一覧】 ===")
+      (bld_print_list sset)
+      (princ (strcat "\n--- 処理完了: 合計 " (itoa (sslength sset)) " 個のブロックを選択状態にしています ---"))
+    )
+    (progn
+      (princ "\n※ 幅・奥行きを指定すると、図面全体から該当サイズのブロックを検索します。")
+      (princ "\n   両方スキップ(Enter)すると、検索範囲の指定に進みます。")
+      (setq w (getreal "\n検索する「幅」を入力 [スキップはEnter]: "))
+      (setq d (getreal "\n検索する「奥行き」を入力 [スキップはEnter]: "))
+
+      (if (or w d)
+        ;; ---- 幅・奥行き指定あり: 図面全体から検索 ----
         (progn
-          (setq final-ss (ssadd) cache nil i 0)
-          (while (< i (sslength sset))
-            (setq e (ssname sset i))
-            (setq nm (cdr (assoc 2 (entget e))))
-            ;; ブロック名ごとにサイズをキャッシュ
-            (if (setq c (assoc nm cache))
-              (setq dim (cdr c))
-              (progn
-                (setq dim (bld_block_size nm))
-                (setq cache (cons (cons nm dim) cache))
+          (setq sset (bld_select_all))
+          (if (or (null sset) (= (sslength sset) 0))
+            (princ "\n図面内にブロックがありません。")
+            (progn
+              (setq final-ss (ssadd) cache nil i 0)
+              (while (< i (sslength sset))
+                (setq e (ssname sset i))
+                (setq nm (cdr (assoc 2 (entget e))))
+                ;; ブロック名ごとにサイズをキャッシュ
+                (if (setq c (assoc nm cache))
+                  (setq dim (cdr c))
+                  (progn
+                    (setq dim (bld_block_size nm))
+                    (setq cache (cons (cons nm dim) cache))
+                  )
+                )
+                (if (and (or (null w) (< (abs (- (car dim) w)) 0.001))
+                         (or (null d) (< (abs (- (cadr dim) d)) 0.001)))
+                  (ssadd e final-ss)
+                )
+                (setq i (1+ i))
               )
-            )
-            (if (and (or (null w) (< (abs (- (car dim) w)) 0.001))
-                     (or (null d) (< (abs (- (cadr dim) d)) 0.001)))
-              (ssadd e final-ss)
-            )
-            (setq i (1+ i))
-          )
-          (if (> (sslength final-ss) 0)
-            (progn
-              (sssetfirst nil final-ss)
-              (princ "\n\n=== 【条件に一致したブロック】 ===")
-              (bld_print_list final-ss)
-              (princ (strcat "\n--- 指定された条件に一致する " (itoa (sslength final-ss)) " 個のブロックを選択しました ---"))
-            )
-            (progn
-              (sssetfirst nil nil)
-              (princ "\n--- 指定された条件に一致するブロックはありませんでした ---")
+              (if (> (sslength final-ss) 0)
+                (progn
+                  (sssetfirst nil final-ss)
+                  (princ "\n\n=== 【条件に一致したブロック】 ===")
+                  (bld_print_list final-ss)
+                  (princ (strcat "\n--- 指定された条件に一致する " (itoa (sslength final-ss)) " 個のブロックを選択しました ---"))
+                )
+                (progn
+                  (sssetfirst nil nil)
+                  (princ "\n--- 指定された条件に一致するブロックはありませんでした ---")
+                )
+              )
             )
           )
         )
-      )
-    )
-    ;; ---- 指定なし: 検索範囲を指定して寸法一覧を表示 ----
-    (progn
-      (setq sset (bld_select_range))
-      (if (or (null sset) (= (sslength sset) 0))
-        (princ "\n\nブロックが見つかりませんでした。")
+        ;; ---- 指定なし: 検索範囲を指定して寸法一覧を表示 ----
         (progn
-          (sssetfirst nil sset)
-          (princ "\n\n=== 【ブロックの計測結果一覧】 ===")
-          (bld_print_list sset)
-          (princ (strcat "\n--- 処理完了: 合計 " (itoa (sslength sset)) " 個のブロックを選択状態にしています ---"))
+          (setq sset (bld_select_range))
+          (if (or (null sset) (= (sslength sset) 0))
+            (princ "\n\nブロックが見つかりませんでした。")
+            (progn
+              (sssetfirst nil sset)
+              (princ "\n\n=== 【ブロックの計測結果一覧】 ===")
+              (bld_print_list sset)
+              (princ (strcat "\n--- 処理完了: 合計 " (itoa (sslength sset)) " 個のブロックを選択状態にしています ---"))
+            )
+          )
         )
       )
     )
