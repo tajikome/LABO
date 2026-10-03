@@ -1,10 +1,28 @@
 ;;; ============================================================
-;;;  QS - クイック選択拡張 (v9: [7]回転角度を追加・フルスクリーン展開時のマウスホイール対応・項目欄をフルスクリーン展開・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
+;;;  QS - クイック選択拡張 (v10: ロック・凍結レイヤーのオブジェクトを除外・[7]回転角度を追加・フルスクリーン展開時のマウスホイール対応・項目欄をフルスクリーン展開・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
 ;;;
 ;;;  必要なファイルは QS.lsp 1本だけです。コマンド名は "QS" です。
 ;;;  PowerShell(WPF)のダイアログ用スクリプトはこのファイルの中に
 ;;;  文字列として埋め込まれており、実行のたびに一時フォルダへ
 ;;;  自動的に書き出されます(qse-write-ps1-script関数)。
+;;;
+;;;  v10での変更点:
+;;;   ・ロックされたレイヤー・凍結されたレイヤーのオブジェクトを除外する。
+;;;     基準オブジェクトの中にこれらが含まれていても、条件設定(各項目欄の
+;;;     一覧)には反映されない。また最終的な選択時も、「図面全体から検索」
+;;;     (ssget "X")はロック・凍結を無視してヒットしてしまうため、
+;;;     検索範囲によらず統一して除外するようにした
+;;;
+;;;  v9での変更点:
+;;;   ・項目欄に [7] 回転角度 を追加。DXFグループコード50(ラジアン)を
+;;;     度数に変換し、0〜360度の範囲に正規化のうえ小数点2桁で丸めて
+;;;     件数付きで一覧表示する(例: "90.00° (3件)")。
+;;;     ※ 丸めた度数をそのままssgetフィルタの値(ラジアンへ逆変換)として
+;;;     使うため、表示上は同じ角度でも実際のデータがごく僅かに異なる
+;;;     (例: スクリプト等で直接ラジアン値を与えて作成された場合)と、
+;;;     一覧上は同じに見えてもすべては選択されないことがある。
+;;;     「90」「180」など、コマンドで角度を直接入力して回転させた
+;;;     オブジェクト同士であれば通常は同じ値になり問題ない。
 ;;;
 ;;;  v8での変更点:
 ;;;   ・ダイアログのウィンドウを大きく(幅1000→1200、一覧の高さ108→150 など)し、
@@ -28,19 +46,7 @@
 ;;;     一覧の枠がスクロールバーを持たずに際限なく伸びてしまい、マウスホイールで
 ;;;     のスクロールが効かなくなる。あらかじめ計算した高さを与えることで、
 ;;;     項目数が多いときは一覧の中でスクロール(マウスホイール対応)するようにした。
-;;;
-;;;  v9での変更点:
-;;;   ・項目欄に [7] 回転角度 を追加。DXFグループコード50(ラジアン)を
-;;;     度数に変換し、0〜360度の範囲に正規化のうえ小数点2桁で丸めて
-;;;     件数付きで一覧表示する(例: "90.00° (3件)")。
-;;;     ※ 丸めた度数をそのままssgetフィルタの値(ラジアンへ逆変換)として
-;;;     使うため、表示上は同じ角度でも実際のデータがごく僅かに異なる
-;;;     (例: スクリプト等で直接ラジアン値を与えて作成された場合)と、
-;;;     一覧上は同じに見えてもすべては選択されないことがある。
-;;;     「90」「180」など、コマンドで角度を直接入力して回転させた
-;;;     オブジェクト同士であれば通常は同じ値になり問題ない。
-;;;     小さい画面ではみ出さないよう、
-;;;     作業領域に合わせて幅・高さの上限を自動調整
+;;;     小さい画面ではみ出さないよう、作業領域に合わせて幅・高さの上限を自動調整
 ;;;   ・ブロック名/文字列内容が1種類だけのとき、先頭1文字しか表示
 ;;;     されない不具合を修正(PowerShell側Get-Sectionの戻り値が1要素だと
 ;;;     文字列に展開されてしまうため、カンマ演算子で包んでリストのまま返す)
@@ -881,6 +887,13 @@
   (princ)
 )
 
+;; 指定したレイヤーがロックまたは凍結されているか判定する
+;; (LAYERテーブルのグループコード70: bit1=凍結、bit4=ロック)
+(defun qse-layer-locked-or-frozen (layerName / layerTbl)
+  (setq layerTbl (tblsearch "LAYER" layerName))
+  (and layerTbl (/= (logand (cdr (assoc 70 layerTbl)) 5) 0))
+)
+
 ;; 複数選択された値からssgetフィルタのサブリストを作る
 (defun qse-make-subfilter (dxfCode valList / subLst itemVal)
   (if (> (length valList) 1)
@@ -998,77 +1011,84 @@
 
       (repeat (setq i (sslength ssBase))
         (setq entData (entget (ssname ssBase (setq i (1- i)))))
-        (setq objType (cdr (assoc 0 entData)))
-        (if (and objType (not (member objType typeList)))
-          (setq typeList (cons objType typeList)))
-
         (setq layerName (cdr (assoc 8 entData)))
-        (if (and layerName (not (member layerName layerList)))
-          (setq layerList (cons layerName layerList)))
 
-        (setq colorVal (cdr (assoc 62 entData)))
-        (if (null colorVal) (setq colorVal "256 (ByLayer)") (setq colorVal (itoa colorVal)))
-        (if (not (member colorVal colorList))
-          (setq colorList (cons colorVal colorList)))
-
-        (setq ltypeVal (cdr (assoc 6 entData)))
-        (if (null ltypeVal) (setq ltypeVal "ByLayer"))
-        (if (not (member ltypeVal ltypeList))
-          (setq ltypeList (cons ltypeVal ltypeList)))
-
-        ;; 回転角度(DXFグループコード50、ラジアン)を度数に変換し、
-        ;; 0〜360度の範囲に正規化して小数点2桁に丸めたうえで件数集計する。
-        ;; 回転の概念がないオブジェクト(LINE/CIRCLEなど)は単に無視される
-        (setq rotVal (cdr (assoc 50 entData)))
-        (if rotVal
+        ;; ロック・凍結されたレイヤーのオブジェクトは、条件設定(各項目欄の
+        ;; 一覧)には含めない。基準選択に含まれていても、ここで丸ごと無視する
+        (if (not (qse-layer-locked-or-frozen layerName))
           (progn
-            (setq rotDeg (* rotVal (/ 180.0 pi)))
-            (while (< rotDeg 0.0)    (setq rotDeg (+ rotDeg 360.0)))
-            (while (>= rotDeg 360.0) (setq rotDeg (- rotDeg 360.0)))
-            (setq rotKey (rtos rotDeg 2 2))
-            (setq angleCountAlist (qse-count-inc angleCountAlist rotKey))
-          )
-        )
+            (setq objType (cdr (assoc 0 entData)))
+            (if (and objType (not (member objType typeList)))
+              (setq typeList (cons objType typeList)))
 
-        ;; ブロック参照: ブロック名を件数付きで集計する。
-        ;; さらに、そのブロック参照に属性(ATTRIB)がぶら下がっている場合は
-        ;; entnextで辿って属性値も「文字列内容」として集計する
-        ;; (これが「オブジェクトの中にある文字・ブロックを選ぶ」機能 v6)
-        (if (= objType "INSERT")
-          (progn
-            (setq blkName (cdr (assoc 2 entData)))
-            (if blkName
-              (setq blkCountAlist (qse-count-inc blkCountAlist blkName)))
+            (if (and layerName (not (member layerName layerList)))
+              (setq layerList (cons layerName layerList)))
 
-            (if (= (cdr (assoc 66 entData)) 1)
+            (setq colorVal (cdr (assoc 62 entData)))
+            (if (null colorVal) (setq colorVal "256 (ByLayer)") (setq colorVal (itoa colorVal)))
+            (if (not (member colorVal colorList))
+              (setq colorList (cons colorVal colorList)))
+
+            (setq ltypeVal (cdr (assoc 6 entData)))
+            (if (null ltypeVal) (setq ltypeVal "ByLayer"))
+            (if (not (member ltypeVal ltypeList))
+              (setq ltypeList (cons ltypeVal ltypeList)))
+
+            ;; 回転角度(DXFグループコード50、ラジアン)を度数に変換し、
+            ;; 0〜360度の範囲に正規化して小数点2桁に丸めたうえで件数集計する。
+            ;; 回転の概念がないオブジェクト(LINE/CIRCLEなど)は単に無視される
+            (setq rotVal (cdr (assoc 50 entData)))
+            (if rotVal
               (progn
-                (setq attEnt (entnext (ssname ssBase i)))
-                (while (and attEnt
-                            (/= (cdr (assoc 0 (entget attEnt))) "SEQEND"))
-                  (setq attData (entget attEnt))
-                  (if (= (cdr (assoc 0 attData)) "ATTRIB")
-                    (progn
-                      (if (not (member "ATTRIB" typeList))
-                        (setq typeList (cons "ATTRIB" typeList)))
-                      (setq attTxt (cdr (assoc 1 attData)))
-                      (if attTxt
-                        (setq txtCountAlist (qse-count-inc txtCountAlist attTxt)))
+                (setq rotDeg (* rotVal (/ 180.0 pi)))
+                (while (< rotDeg 0.0)    (setq rotDeg (+ rotDeg 360.0)))
+                (while (>= rotDeg 360.0) (setq rotDeg (- rotDeg 360.0)))
+                (setq rotKey (rtos rotDeg 2 2))
+                (setq angleCountAlist (qse-count-inc angleCountAlist rotKey))
+              )
+            )
+
+            ;; ブロック参照: ブロック名を件数付きで集計する。
+            ;; さらに、そのブロック参照に属性(ATTRIB)がぶら下がっている場合は
+            ;; entnextで辿って属性値も「文字列内容」として集計する
+            ;; (これが「オブジェクトの中にある文字・ブロックを選ぶ」機能 v6)
+            (if (= objType "INSERT")
+              (progn
+                (setq blkName (cdr (assoc 2 entData)))
+                (if blkName
+                  (setq blkCountAlist (qse-count-inc blkCountAlist blkName)))
+
+                (if (= (cdr (assoc 66 entData)) 1)
+                  (progn
+                    (setq attEnt (entnext (ssname ssBase i)))
+                    (while (and attEnt
+                                (/= (cdr (assoc 0 (entget attEnt))) "SEQEND"))
+                      (setq attData (entget attEnt))
+                      (if (= (cdr (assoc 0 attData)) "ATTRIB")
+                        (progn
+                          (if (not (member "ATTRIB" typeList))
+                            (setq typeList (cons "ATTRIB" typeList)))
+                          (setq attTxt (cdr (assoc 1 attData)))
+                          (if attTxt
+                            (setq txtCountAlist (qse-count-inc txtCountAlist attTxt)))
+                        )
+                      )
+                      (setq attEnt (entnext attEnt))
                     )
                   )
-                  (setq attEnt (entnext attEnt))
                 )
               )
             )
-          )
-        )
 
-        ;; 文字列系エンティティ(TEXT/MTEXT/ATTDEF/ATTRIB)は内容ごとに件数を集計
-        (if (or (= objType "TEXT") (= objType "MTEXT")
-                (= objType "ATTDEF") (= objType "ATTRIB"))
-          (progn
-            (setq txtContent (cdr (assoc 1 entData)))
-            (if txtContent
-              (setq txtCountAlist (qse-count-inc txtCountAlist txtContent)))
+            ;; 文字列系エンティティ(TEXT/MTEXT/ATTDEF/ATTRIB)は内容ごとに件数を集計
+            (if (or (= objType "TEXT") (= objType "MTEXT")
+                    (= objType "ATTDEF") (= objType "ATTRIB"))
+              (progn
+                (setq txtContent (cdr (assoc 1 entData)))
+                (if txtContent
+                  (setq txtCountAlist (qse-count-inc txtCountAlist txtContent)))
+              )
+            )
           )
         )
       )
@@ -1205,6 +1225,25 @@
                )
              )
 
+             ;; ロック・凍結されたレイヤーのオブジェクトは対象から除外する。
+             ;; 「画面上で対象を選択」「閉じたポリラインの内側」はAutoCAD標準の
+             ;; ピック動作により通常はこれらが選択候補に入らないが、
+             ;; 「図面全体から検索」(ssget "X")はロック・凍結を無視して
+             ;; ヒットするため、ここで検索範囲によらず統一して除外する
+             (if ssFilter
+               (progn
+                 (setq i (sslength ssFilter))
+                 (while (> i 0)
+                   (setq i (1- i))
+                   (setq layerName (cdr (assoc 8 (entget (ssname ssFilter i)))))
+                   (if (qse-layer-locked-or-frozen layerName)
+                     (setq ssFilter (ssdel (ssname ssFilter i) ssFilter))
+                   )
+                 )
+                 (if (= (sslength ssFilter) 0) (setq ssFilter nil))
+               )
+             )
+
              (if ssFilter
                (progn
                  (sssetfirst nil ssFilter)
@@ -1225,5 +1264,5 @@
   )
   (princ)
 )
-(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v9:[7]回転角度を追加・フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
+(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v10:ロック凍結レイヤー除外・[7]回転角度を追加・フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
 (princ)
