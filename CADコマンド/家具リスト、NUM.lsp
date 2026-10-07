@@ -1,4 +1,4 @@
-;;; ================================================================
+﻿;;; ================================================================
 ;;;  NUM.lsp  -  番号タグの連番付与 / CSV書き出し / ブロック属性
 ;;;
 ;;;   NUM  : 図形やブロックを順にクリックし、連番の番号タグを付ける
@@ -6,35 +6,54 @@
 ;;;          その英字の中で図面にある最大の番号の続きから始まる
 ;;;          同じ番号を複数の対象に付けるには、K(固定)かM(複数選択)を使う
 ;;;          対象がブロックで、属性「什器No」を持っていれば、その値を番号に自動で合わせる
-;;;   NUMX : 番号ごとに、No・名称・幅・奥行・高さ・個数をCSVに書き出す
-;;;          個数 = 同じ番号が付いた対象の数
+;;;          コマンドを開始する前に、番号(タグ、または番号を付けた対象)を1個だけ
+;;;          選んでいれば、その続きの番号から始める(基本は、そのまま連番で進める)
+;;;          すでに番号が付いている対象を選ぶと、付け直すか確認する(既定はYES)
+;;;   NUMX : 番号ごとに、什器No・名称・幅・奥行・高さ・個数・階数・エリア・
+;;;          什器分類・色・備考をCSVに書き出す
+;;;          番号タグがないブロックでも、属性「什器No」に値が入っていれば対象に含める
+;;;          (番号タグがあれば、タグの番号を優先する)
+;;;          同じ番号でも、サイズ(幅・奥行・高さ)が違うものは別の行に分けて書き出す
+;;;          個数 = 各対象の「個数」属性の合計(未入力は1としてカウント)
 ;;;          サイズは、ブロックなら定義の外形×拡大率(回転は打ち消す)、
 ;;;          それ以外は軸に平行な外形。ブロック内に長さ *num-mark-len*(100)
 ;;;          の線分があれば、奥行きから *num-mark-sub*(50)を引く
+;;;          ブロック内にTRI150の三角形(一辺150)があれば、サイズ計算から除外する
 ;;;          属性(幅・奥行・高さ・品名)に入力があれば、測定値より優先する
 ;;;          出力時に、分けない/エリア(属性)ごと/階数(属性)ごと、のいずれかを確認する
 ;;;          (番号の英字部分では分けない)
-;;;          ブロック内にTRI150の三角形(一辺150)があれば、サイズ計算から除外する
 ;;;   NUMA : 既存のブロックの属性を、標準の項目(什器No・階数・エリア・品名・幅・
 ;;;          奥行・高さ・個数・什器分類・色・備考)で作り直す(既存の属性はいった
 ;;;          ん削除してから作成。NUMCのnum:replace-tagsと同じ方式)。図面に反映
 ;;;          する(ATTSYNC)。項目を変えたいときは *numa-tags* を書き換える。
 ;;;          配置位置: ブロックの最下部にある「中点」(POINT)があればそこ、
 ;;;          なければ最下辺の中央。そこから下方向へ200ピッチ、文字高さ125
-;;;   NUMC : 1つのブロックの属性値を、他のブロックへコピーする。コピー先の
-;;;          属性(コピー元とは無関係なものも含む)はいったんすべて削除し、
-;;;          コピー元と同じ項目を作り直してから(ブロック定義ごと=そのブロック
-;;;          の他のインスタンスにも反映)、値をコピーする。既存の値は失われる。
-;;;          コピーしないタグは *numc-skip* で変更できる
+;;;   NUMC : 1つのブロックの属性値を、他のブロックへコピーする(全項目、什器Noを除く)。
+;;;          コピー元・コピー先とも、コマンドを開始する前に選んでいれば、その選択を
+;;;          使える(1個目がコピー元、2個目以降があればコピー先になる)。コピー先の
+;;;          属性(コピー元とは無関係なものも含む)はいったんすべて削除し、コピー元
+;;;          と同じ項目を作り直してから、値をコピーする。既存の値は失われる
+;;;   NUMF : 図面にある、属性を持つブロックから「タグ: 値」の組み合わせを件数付きで
+;;;          集め、PowerShell(WPF)のダイアログで検索したいものを選ぶ(複数可)。
+;;;          見つかった対象は、図面上で選択状態になる(続けてNUMCやNUMIに使える)
+;;;   NUMI : NUMCと同じく、1つのブロックの属性値を他のブロックへコピーするが、
+;;;          コピーする項目を、PowerShell(WPF)のダイアログで選べる(複数可、既定は
+;;;          未選択)。コピー先にすでにある項目は値を置き換え、関係のない(選ばな
+;;;          かった)属性には触れない
 ;;;
 ;;;  ・番号タグ = 文字(既定)、または 丸+属性NO のブロック「NUM_TAG」
 ;;;    (NUMの対象選択中に T で切り替え)
-;;;  ・文字タグは、既存の番号文字と同じプロパティ(画層・文字スタイルASA・
-;;;    高さ400・幅係数0.7・位置合わせMC・ByLayer)で作成する
+;;;  ・文字タグは、既存の番号文字と同じプロパティ(画層・文字スタイルMeiryo UI・
+;;;    高さ250・幅係数0.7・位置合わせMC・ByLayer)で作成する
 ;;;  ・番号を付けた対象には、XDATA(アプリ名 NUM_APP)でタグのハンドルを記録
-;;;  ・タグを図面から消すと、その番号は無効になる(NUMXにも出ない)
+;;;  ・タグを図面から消すと、その番号は無効になる(NUMXにも出ない。ただし、
+;;;    属性「什器No」に値が入っているブロックは、その値でNUMXに出る)
 ;;;  ・番号を直したいときは、タグを編集する(文字なら直接、丸付きブロック
 ;;;    なら属性値NOを編集)
+;;;  ・NUMFとNUMIのダイアログは、Windows + PowerShellが必要(QSコマンドと同じ、
+;;;    埋め込んだPowerShellスクリプトを一時ファイルに書き出しWScript.Shell経由で
+;;;    実行する方式)。AutoCAD上では未検証。QSのように洗練したデザインではなく、
+;;;    シンプルなダーク基調のカード型チェックリストにしてある
 ;;;  ・このファイルは、日本語(全角)の文字をそのまま含んでいる(文字列・
 ;;;    コメントとも)。文字コードは UTF-8(BOM付き)で保存する
 ;;;  ・AutoCAD 2021以降は、システム変数 LISPSYS の既定値(1)でAutoLISPが
@@ -47,7 +66,7 @@
 (setq *num-app*    "NUM_APP"     ; XDATAのアプリケーション名
       *num-blk*    "NUM_TAG"     ; タグ用ブロックの名前(表示形式がBLOCKのときだけ使う)
       *num-lay*    "ナンバリング"  ; 番号タグの画層(すでにある画層は、そのまま使う)
-      *num-tstyle* "ASA"         ; 文字(TEXT)タグの文字スタイル(なければ現在のスタイルを使う)
+      *num-tstyle* "Meiryo UI"   ; 文字(TEXT)タグの文字スタイル(なければ現在のスタイルを使う)
       *num-th*     250.0         ; 文字(TEXT)タグの文字高さ
       *num-mark-len* 100.0       ; ブロック内にこの長さの線分があれば、奥行き調整のマークとみなす
       *num-mark-sub* 50.0        ; その線分がある場合、奥行きからこの値を引く
@@ -316,6 +335,16 @@
         (vla-put-TextString a txt)))
   )
   (princ) ; 戻り値は使わない
+)
+
+;; 対象ent(タグ自身、または番号を付けた対象)から、表示されている番号を読み取る。
+;; 読み取れなければ nil。NUMの開始時、事前選択から続きの番号を決めるのに使う。
+(defun num:pre-number (ent / h tag)
+  (cond
+    ((num:tag-p (entget ent)) (num:tag-value ent))
+    ((and (setq h (num:get-h ent)) (setq tag (num:tag-ename h))) (num:tag-value tag))
+    (t nil)
+  )
 )
 
 ;; 図面にある(生きている)タグのうち、指定した英字部分で使われている最大の番号を返す(なければ0)
@@ -645,7 +674,8 @@
          ((and (num:tag-ename (num:get-h ent))
                (progn
                  (initget "Yes No")
-                 (/= (getkword "\nすでに番号が付いています。付け直しますか? [はい(Y)/いいえ(N)] <N>: ") "Yes")))
+                 (setq s1 (getkword "\nすでに番号が付いています。付け直しますか? [はい(Y)/いいえ(N)] <Y>: "))
+                 (= s1 "No")))
           nil)
          (t
           (if (num:tag-ename (num:get-h ent)) (setq oldh (num:get-h ent)))
@@ -663,79 +693,108 @@
 
 ;;; ---- NUMX : 番号付きの対象をCSVに書き出す -------------------------
 
-(defun c:NUMX ( / ss i ent ed tag typ name bb sz val pr atts nm2 w d h qty nfloor narea ncolor nnote ncat rows merged m mixed s3 split path groups gl grp f r file kinds total)
+;; 対象entの、CSV1行分のデータを返す。val は表示番号(什器No)。
+;; row = (英字部分 番号 表示番号(什器No) 名称 幅 奥行 高さ 個数 階数 エリア 色 備考 什器分類)
+(defun num:x-row (ent val / ed typ name bb sz atts nm2 w d h pr)
+  (setq ed   (entget ent)
+        typ  (cdr (assoc 0 ed))
+        name (if (= typ "INSERT")
+               (vla-get-EffectiveName (vlax-ename->vla-object ent))
+               typ)
+        bb   (num:bbox ent)
+        sz   (if (= typ "INSERT") (num:block-size ent)))
+  ;; sz = (幅 奥行 高さ)。ブロックの場合は回転を打ち消した値(num:block-size を参照)。
+  ;; それ以外、または測れない場合は、軸に平行な外形の値。
+  (if (and (not sz) bb)
+    (setq sz (list (- (car  (cadr bb)) (car  (car bb)))
+                   (- (cadr (cadr bb)) (cadr (car bb)))
+                   (- (caddr (cadr bb)) (caddr (car bb))))))
+  ;; 属性(ブロックのみ): 値が入力されていれば、測定した値より優先する
+  (setq atts (if (= typ "INSERT") (num:atts (vlax-ename->vla-object ent))))
+  (if (setq nm2 (num:att-get atts "品名")) (setq name (vl-string-translate "\"" "'" nm2)))
+  (setq w (num:size-text atts '("幅") (if sz (car sz)))
+        d (num:size-text atts '("奥行" "奥行き") (if sz (cadr sz)))
+        h (num:size-text atts '("高さ") (if sz (caddr sz))))
+  (if (not val) (setq val ""))
+  (setq pr (num:parse val))
+  ;; 個数(属性)は、入力がなければ 1 としてカウントする。
+  ;; その他の属性は、いずれも入力がなければ空文字
+  (list (strcase (car pr)) (cadr pr) val name
+        w d h (num:att-qty atts)
+        (num:csv-att atts "階数")
+        (num:csv-att atts "エリア")
+        (num:csv-att atts "色")
+        (num:csv-att atts "備考")
+        (num:csv-att atts "什器分類"))
+)
+
+;; サイズの文字列 a が b より前に並ぶなら T(数値どうしは数値で比べ、数値は「-」などより前)
+(defun num:size-lt (a b / x y)
+  (setq x (distof a 2) y (distof b 2))
+  (cond
+    ((and x y) (< x y))
+    (x T)
+    (y nil)
+    (t (< a b))
+  )
+)
+
+;; CSVの行の並び順: 英字部分 → 番号 → 幅 → 奥行 → 高さ
+(defun num:row-lt (a b)
+  (cond
+    ((/= (car a) (car b)) (< (car a) (car b)))
+    ((/= (cadr a) (cadr b)) (< (cadr a) (cadr b)))
+    ((/= (nth 4 a) (nth 4 b)) (num:size-lt (nth 4 a) (nth 4 b)))
+    ((/= (nth 5 a) (nth 5 b)) (num:size-lt (nth 5 a) (nth 5 b)))
+    (t (num:size-lt (nth 6 a) (nth 6 b)))
+  )
+)
+
+(defun c:NUMX ( / ss i ent tag val rows merged m mixed sizediff s3 split path groups gl grp f r file kinds total)
 
   (setq *num-bcache* nil *num-mcache* nil)
-  ;; 番号が付いた対象ごとに、1行分のデータを集める
-  (setq ss (ssget "_X" (list (list -3 (list *num-app*)))))
-  (if ss
+  ;; 番号タグが付いた対象ごとに、1行分のデータを集める(表示番号はタグの番号)
+  (if (setq ss (ssget "_X" (list (list -3 (list *num-app*)))))
     (progn
       (setq i 0)
       (repeat (sslength ss)
         (setq ent (ssname ss i) i (1+ i))
         (if (setq tag (num:tag-ename (num:get-h ent)))
-          (progn
-            (setq ed   (entget ent)
-                  typ  (cdr (assoc 0 ed))
-                  name (if (= typ "INSERT")
-                         (vla-get-EffectiveName (vlax-ename->vla-object ent))
-                         typ)
-                  bb   (num:bbox ent)
-                  sz   (if (= typ "INSERT") (num:block-size ent))
-                  val  (num:tag-value tag))
-            ;; sz = (幅 奥行 高さ)。ブロックの場合は回転を打ち消した値(num:block-size を参照)。
-            ;; それ以外、または測れない場合は、軸に平行な外形の値。
-            (if (and (not sz) bb)
-              (setq sz (list (- (car  (cadr bb)) (car  (car bb)))
-                             (- (cadr (cadr bb)) (cadr (car bb)))
-                             (- (caddr (cadr bb)) (caddr (car bb))))))
-            ;; 属性(ブロックのみ): 値が入力されていれば、測定した値より優先する
-            (setq atts (if (= typ "INSERT") (num:atts (vlax-ename->vla-object ent))))
-            (if (setq nm2 (num:att-get atts "品名")) (setq name (vl-string-translate "\"" "'" nm2)))
-            (setq w (num:size-text atts '("幅") (if sz (car sz)))
-                  d (num:size-text atts '("奥行" "奥行き") (if sz (cadr sz)))
-                  h (num:size-text atts '("高さ") (if sz (caddr sz))))
-            ;; 個数(属性): 入力がなければ 1 としてカウントする
-            (setq qty (num:att-qty atts))
-            ;; ブロックの、その他の属性(いずれも入力がなければ空文字)
-            (setq nfloor (num:csv-att atts "階数")
-                  narea  (num:csv-att atts "エリア")
-                  ncolor (num:csv-att atts "色")
-                  nnote  (num:csv-att atts "備考")
-                  ncat   (num:csv-att atts "什器分類"))
-            (if (not val) (setq val ""))
-            (setq pr (num:parse val))
-            ;; row = (英字部分 番号 表示番号(什器No) 名称 幅 奥行 高さ 個数 階数 エリア 色 備考 什器分類)
-            (setq rows
-                  (cons (list (strcase (car pr)) (cadr pr) val name
-                              w d h qty nfloor narea ncolor nnote ncat)
-                        rows))
-          )
-        )
-      )
-    )
-  )
+          (setq rows (cons (num:x-row ent (num:tag-value tag)) rows))))))
+  ;; 番号タグがないブロックでも、属性「什器No」に値が入っていれば対象にする(表示番号はその値)
+  (if (setq ss (ssget "_X" '((0 . "INSERT") (66 . 1))))
+    (progn
+      (setq i 0)
+      (repeat (sslength ss)
+        (setq ent (ssname ss i) i (1+ i))
+        (if (and (not (num:tag-ename (num:get-h ent)))
+                 (not (num:tag-p (entget ent)))
+                 (setq val (num:att-get (num:atts (vlax-ename->vla-object ent)) "什器No")))
+          (setq rows (cons (num:x-row ent val) rows))))))
 
   (cond
     ((null rows)
-     (princ "\n番号を付けた対象が見つかりません。"))
+     (princ "\n番号を付けた対象(または什器Noが入力されたブロック)が見つかりません。"))
     (t
-     (setq rows (vl-sort rows
-                         '(lambda (a b)
-                            (or (< (car a) (car b))
-                                (and (= (car a) (car b)) (< (cadr a) (cadr b)))))))
-     ;; 同じ番号を持つ対象をまとめる。個数は、各対象の「個数」属性の合計(未入力は1)。
-     ;; サイズ・名称は、最初の1つの値を使う。まとめた1件 = (個数 英字部分 番号 表示番号(什器No) 名称 幅 奥行 高さ ...)
-     (setq merged nil mixed nil)
+     (setq rows (vl-sort rows 'num:row-lt))
+     ;; 同じ番号で、サイズ(幅・奥行・高さ)も同じ対象をまとめる。サイズが違うものは別の行にする。
+     ;; 個数は、各対象の「個数」属性の合計(未入力は1)。名称などは、最初の1つの値を使う。
+     ;; まとめた1件 = (個数 英字部分 番号 表示番号(什器No) 名称 幅 奥行 高さ ...)
+     (setq merged nil mixed nil sizediff nil)
      (foreach r rows
        (setq m (car merged))
        (cond
-         ((and m (= (car r) (cadr m)) (= (cadr r) (caddr m)))
+         ((and m (= (car r) (cadr m)) (= (cadr r) (caddr m))
+               (= (nth 4 r) (nth 5 m)) (= (nth 5 r) (nth 6 m)) (= (nth 6 r) (nth 7 m)))
           (if (and (/= (cadddr r) (nth 4 m))
                    (not (member (cadddr m) mixed)))
             (setq mixed (cons (cadddr m) mixed)))
           (setq merged (cons (cons (+ (car m) (nth 7 r)) (cdr m)) (cdr merged))))
          (t
+          ;; 同じ番号でサイズが違う(並び順で直前が同じ番号)
+          (if (and m (= (car r) (cadr m)) (= (cadr r) (caddr m))
+                   (not (member (cadddr m) sizediff)))
+            (setq sizediff (cons (cadddr m) sizediff)))
           (setq merged (cons (cons (nth 7 r) r) merged))))
      )
      (setq rows (reverse merged))
@@ -744,6 +803,11 @@
                       (apply 'strcat
                              (mapcar '(lambda (x) (strcat " " x))
                                      (reverse mixed))))))
+     (if sizediff
+       (princ (strcat "\n注意: 同じ番号でサイズが違う対象は、別の行に分けました →"
+                      (apply 'strcat
+                             (mapcar '(lambda (x) (strcat " " x))
+                                     (reverse sizediff))))))
      ;; 分けて出力するかどうかを確認する。分ける場合は、属性「エリア」か「階数」の値ごとに
      ;; CSVを分ける(番号の英字部分では分けない)。わかれる値の列位置: エリア=10、階数=9
      (initget "None Area Floor")
@@ -933,6 +997,120 @@
   )
 )
 
+;; strをdelimで分割した文字列のリストを返す
+(defun num:split (str delim / out pos)
+  (setq out nil)
+  (while (setq pos (vl-string-search delim str))
+    (setq out (cons (substr str 1 pos) out)
+          str (substr str (+ pos 1 (strlen delim))))
+  )
+  (reverse (cons str out))
+)
+
+
+;; ============================================================
+;;  PowerShell(WPF)ダイアログ関連のヘルパー
+;;  QSコマンドと同じ方式(埋め込んだPowerShellスクリプトを一時ファイルに書き出し、
+;;  WScript.Shell経由で実行する)。Windows + PowerShellが必要。AutoCADでは未検証。
+;; ============================================================
+
+;; strの中のoldをすべてnewに置き換える(num:splitと違い、全置換)
+(defun num:replace-all (s old new / i out)
+  (setq out "")
+  (while (setq i (vl-string-search old s))
+    (setq out (strcat out (substr s 1 i) new)
+          s (substr s (+ i 1 (strlen old))))
+  )
+  (strcat out s)
+)
+
+;; sを、PowerShellのダブルクォート文字列の中に安全に入れられるようにする
+;; (バッククォート・二重引用符・$ を処理する)
+(defun num:ps-esc (s)
+  (setq s (num:replace-all s "`" "``"))
+  (setq s (num:replace-all s "\"" "'"))
+  (setq s (num:replace-all s "$" "`$"))
+  s
+)
+
+;; ファイルパス用(ダブルクォートの中に入れるだけなので、引用符だけ安全にする)
+(defun num:ps-path (s)
+  (num:replace-all s "\"" "'")
+)
+
+;; items(文字列のリスト)から、PowerShellの配列リテラルの中身を作る(カンマ区切り)
+(defun num:ps-items (items / s)
+  (setq s "")
+  (foreach it items
+    (setq s (strcat s (if (= s "") "" ",\n") "\"" (num:ps-esc it) "\"")))
+  s
+)
+
+;; scriptを一時的な .ps1 として書き出し、WScript.Shell経由で実行する(閉じるまで待つ)
+(defun num:run-ps (script / psPath wsh f)
+  (setq psPath (vl-filename-mktemp "numui_" nil ".ps1"))
+  (setq f (open psPath "w"))
+  (write-line script f)
+  (close f)
+  (setq wsh (vlax-create-object "WScript.Shell"))
+  (vl-catch-all-apply
+    'vlax-invoke
+    (list wsh 'Run
+          (strcat "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -File \"" psPath "\"")
+          1 T))
+  (vlax-release-object wsh)
+  (if (findfile psPath) (vl-file-delete psPath))
+  (princ)
+)
+
+
+;; アイテムを一覧から選ぶ、PowerShell(WPF)のチェックリストダイアログを表示する。
+;; title = ウィンドウタイトル、items = 選択肢(文字列のリスト)。
+;; 戻り値: チェックを付けて「OK」を押した項目のリスト(文字列)。
+;; 「キャンセル」を押した、または何も選ばずOKを押した場合は nil。
+;; 注意: Windows + PowerShell が必要。AutoCADでは未検証。
+(defun num:wpf-checklist (title items / outPath itemsBlock script result f line)
+  (setq outPath (num:ps-path (vl-filename-mktemp "numui_out_" nil ".txt")))
+  (setq itemsBlock (num:ps-items items))
+  (setq script
+    (strcat
+      "Add-Type -AssemblyName PresentationFramework\nAdd-Type -AssemblyName PresentationCore\n\n$items = @(\n"
+      itemsBlock
+      "\n)\n$outFile = \""
+      outPath
+      "\"\n\n[xml]$xaml = @\"\n<Window xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        Title=\""
+      (num:ps-esc title)
+      "\" Height=\"560\" Width=\"420\"\n        WindowStartupLocation=\"CenterScreen\" ResizeMode=\"CanResize\"\n        Background=\"#1E1E24\" Foreground=\"White\" FontFamily=\"Meiryo UI\" FontSize=\"13\">\n  <Grid Margin=\"16\">\n    <Grid.RowDefinitions>\n      <RowDefinition Height=\"Auto\"/>\n      <RowDefinition Height=\"*\"/>\n      <RowDefinition Height=\"Auto\"/>\n    </Grid.RowDefinitions>\n    <Border Grid.Row=\"0\" Background=\"#2A2A33\" CornerRadius=\"8\" Padding=\"10\" Margin=\"0,0,0,10\">\n      <TextBox x:Name=\"SearchBox\" Background=\"Transparent\" Foreground=\"White\" BorderThickness=\"0\" FontSize=\"13\"/>\n    </Border>\n    <Border Grid.Row=\"1\" Background=\"#2A2A33\" CornerRadius=\"8\" Padding=\"8\">\n      <ScrollViewer VerticalScrollBarVisibility=\"Auto\">\n        <StackPanel x:Name=\"ItemsPanel\"/>\n      </ScrollViewer>\n    </Border>\n    <StackPanel Grid.Row=\"2\" Orientation=\"Horizontal\" HorizontalAlignment=\"Right\" Margin=\"0,12,0,0\">\n      <Button x:Name=\"OkBtn\" Content=\"OK\" Width=\"90\" Height=\"34\" Margin=\"0,0,8,0\"/>\n      <Button x:Name=\"CancelBtn\" Content=\""
+      "キャンセル"
+      "\" Width=\"90\" Height=\"34\"/>\n    </StackPanel>\n  </Grid>\n</Window>\n\"@\n\n$reader = New-Object System.Xml.XmlNodeReader $xaml\n$window = [Windows.Markup.XamlReader]::Load($reader)\n$searchBox = $window.FindName('SearchBox')\n$panel = $window.FindName('ItemsPanel')\n$okBtn = $window.FindName('OkBtn')\n$cancelBtn = $window.FindName('CancelBtn')\n\nforeach ($it in $items) {\n  $cb = New-Object System.Windows.Controls.CheckBox\n  $cb.Content = $it\n  $cb.Margin = '4'\n  $cb.Padding = '8,6'\n  $cb.FontSize = 13\n  $cb.Foreground = [System.Windows.Media.Brushes]::White\n  $panel.Children.Add($cb) | Out-Null\n}\n\n$okBtn.Background = [System.Windows.Media.Brushes]::SteelBlue\n$okBtn.Foreground = [System.Windows.Media.Brushes]::White\n$cancelBtn.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(85,85,97))\n$cancelBtn.Foreground = [System.Windows.Media.Brushes]::White\n\n$searchBox.Add_TextChanged({\n  $f = $searchBox.Text\n  foreach ($c in $panel.Children) {\n    if ($f -eq '' -or $c.Content -like \"*$f*\") { $c.Visibility = 'Visible' } else { $c.Visibility = 'Collapsed' }\n  }\n})\n\n$okBtn.Add_Click({\n  $checked = @()\n  foreach ($c in $panel.Children) { if ($c.IsChecked -eq $true) { $checked += $c.Content } }\n  $enc = New-Object System.Text.UTF8Encoding $false\n  [System.IO.File]::WriteAllLines($outFile, [string[]]$checked, $enc)\n  $window.Close()\n})\n\n$cancelBtn.Add_Click({ $window.Close() })\n\n$window.ShowDialog() | Out-Null\n"
+    )
+  )
+  (num:run-ps script)
+  (setq result nil)
+  (if (findfile outPath)
+    (progn
+      (setq f (open outPath "r"))
+      (while (setq line (read-line f))
+        (if (/= (vl-string-trim " " line) "") (setq result (cons line result))))
+      (close f)
+      (setq result (reverse result))
+      (vl-file-delete outPath)
+    )
+  )
+  result
+)
+
+
+;; lst の中で item と等しい最初の要素のインデックスを返す(なければ nil)
+(defun num:index-of (item lst / i found)
+  (setq i 0 found nil)
+  (while (and (< i (length lst)) (not found))
+    (if (equal (nth i lst) item) (setq found i))
+    (setq i (1+ i))
+  )
+  found
+)
+
 ;; 重複を取り除いたリストを返す(順序は保つ)
 (defun num:uniq (lst / r)
   (foreach x lst (if (not (member x r)) (setq r (cons x r))))
@@ -953,7 +1131,7 @@
   (reverse lst)
 )
 
-(defun c:NUMC ( / *error* doc s0 sh sObj satts sname stags ss i tEnt tObj a tag v cnt objs skipped skiptags tcnt mism nm2 added)
+(defun c:NUMC ( / *error* doc s0 sh sObj satts sname stags ss i tEnt tObj a tag v cnt objs skipped skiptags tcnt mism nm2 added pre targets)
 
   (defun *error* (msg)
     (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
@@ -963,7 +1141,28 @@
   )
 
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-  (setq s0 (entsel "\nコピー元のブロック(属性が入っているもの)を選択: "))
+
+  ;; コマンドの実行前にすでに選択されていれば、それを使う。
+  ;; 選択の1個目をコピー元にする。2個以上選んでいれば、残りはコピー先にする
+  ;; (1個だけの場合は、コピー先はこのあと改めて選んでもらう)。
+  (setq pre (ssget "_I" '((0 . "INSERT"))))
+  (sssetfirst nil nil) ; 選択(グリップ)を解除しておく
+  (if pre
+    (progn
+      (setq s0 (list (ssname pre 0)))
+      (setq targets nil i 1)
+      (repeat (1- (sslength pre))
+        (setq targets (cons (ssname pre i) targets) i (1+ i)))
+      (setq targets (reverse targets))
+      (princ (strcat "\n選択済みの1個目をコピー元にします"
+                     (if targets
+                       (strcat "(残り " (itoa (length targets)) " 個をコピー先にします)")
+                       ""))))
+    (progn
+      (setq s0 (entsel "\nコピー元のブロック(属性が入っているもの)を選択: "))
+      (setq targets nil))
+  )
+
   (cond
     ((not s0)
      (princ "\n対象が選択されませんでした。"))
@@ -980,60 +1179,72 @@
         (princ "\nこのブロックには属性がありません。"))
        (t
         (setq skiptags (mapcar 'strcase *numc-skip*))
-        (princ "\nコピー先のブロックを選択(複数可・窓選択も可)してください")
-        (if (setq ss (ssget '((0 . "INSERT"))))
+        ;; 事前選択がなかった場合だけ、ここでコピー先を選んでもらう
+        (if (not targets)
           (progn
-            (setq i 0 cnt 0 objs 0 skipped 0 mism nil)
-            (repeat (sslength ss)
-              (setq tEnt (ssname ss i) i (1+ i))
-              (cond
-                ;; コピー先の選択に、コピー元自身が含まれていた場合は除く
-                ((= (cdr (assoc 5 (entget tEnt))) sh)
-                 (setq skipped (1+ skipped)))
-                (t
-                 (setq tObj (vlax-ename->vla-object tEnt)
-                       nm2  (vla-get-EffectiveName tObj))
-                 ;; もとの属性(コピー元とは無関係なものも含む)は削除し、コピー元と同じ項目を
-                 ;; 作り直す(ブロック定義ごと=そのブロックの他のインスタンスにも反映される)
-                 (setq added (num:replace-tags nm2 stags))
-                 (if added
-                   (setq tObj (vlax-ename->vla-object tEnt))) ; ATTSYNC後の状態を取り直す
-                 (cond
-                   ((and added (= (vla-get-HasAttributes tObj) :vlax-true))
-                    (setq objs (1+ objs) tcnt 0)
-                    (foreach a (vlax-invoke tObj 'GetAttributes)
-                      (setq tag (strcase (vla-get-TagString a)))
-                      (if (and (not (member tag skiptags))
-                               (setq v (cdr (assoc tag satts))))
-                        (progn
-                          (vla-put-TextString a v)
-                          (setq cnt (1+ cnt) tcnt (1+ tcnt))))
-                    )
-                    ;; 一致するタグが1つもなかったブロック名を記録する(あとで原因を示すため)
-                    (if (= tcnt 0)
-                      (setq mism (cons nm2 mism))))
-                   (t
-                    ;; added が nil(外部参照など)、または属性を追加・取得できなかった場合
-                    (setq skipped (1+ skipped))))))
-            )
-            (princ (strcat "\n" (itoa objs) " 個のブロックに、合計 " (itoa cnt) " 項目をコピーしました。"
-                           (if (> skipped 0)
-                             (strcat "(対象外 " (itoa skipped) " 個)")
-                             "")))
-            ;; 1件もコピーできなかったブロックがあれば、原因がわかるようタグを一覧表示する
-            (if mism
+            (princ "\nコピー先のブロックを選択(複数可・窓選択も可)してください")
+            (if (setq ss (ssget '((0 . "INSERT"))))
               (progn
-                (princ (strcat "\n一致するタグがなく、コピーできなかったブロック: "
-                               (apply (function strcat)
-                                      (mapcar (function (lambda (x) (strcat x " ")))
-                                              (num:uniq mism)))))
-                (princ (strcat "\nコピー元(" sname ")のタグ: "
-                               (apply (function strcat)
-                                      (mapcar (function (lambda (p) (strcat (car p) " ")))
-                                              satts))))
-              ))
+                (setq targets nil i 0)
+                (repeat (sslength ss)
+                  (setq targets (cons (ssname ss i) targets) i (1+ i)))
+                (setq targets (reverse targets))))))
+        (cond
+          ((not targets)
+           (princ "\nコピー先が選択されませんでした。"))
+          (t
+           (setq cnt 0 objs 0 skipped 0 mism nil)
+           (foreach tEnt targets
+             (cond
+               ;; コピー先の選択に、コピー元自身が含まれていた場合は除く
+               ((= (cdr (assoc 5 (entget tEnt))) sh)
+                (setq skipped (1+ skipped)))
+               ;; ブロック以外(事前選択に紛れ込んだ図形など)は対象外
+               ((/= (cdr (assoc 0 (entget tEnt))) "INSERT")
+                (setq skipped (1+ skipped)))
+               (t
+                (setq tObj (vlax-ename->vla-object tEnt)
+                      nm2  (vla-get-EffectiveName tObj))
+                ;; もとの属性(コピー元とは無関係なものも含む)は削除し、コピー元と同じ項目を
+                ;; 作り直す(ブロック定義ごと=そのブロックの他のインスタンスにも反映される)
+                (setq added (num:replace-tags nm2 stags))
+                (if added
+                  (setq tObj (vlax-ename->vla-object tEnt))) ; ATTSYNC後の状態を取り直す
+                (cond
+                  ((and added (= (vla-get-HasAttributes tObj) :vlax-true))
+                   (setq objs (1+ objs) tcnt 0)
+                   (foreach a (vlax-invoke tObj 'GetAttributes)
+                     (setq tag (strcase (vla-get-TagString a)))
+                     (if (and (not (member tag skiptags))
+                              (setq v (cdr (assoc tag satts))))
+                       (progn
+                         (vla-put-TextString a v)
+                         (setq cnt (1+ cnt) tcnt (1+ tcnt))))
+                   )
+                   ;; 一致するタグが1つもなかったブロック名を記録する(あとで原因を示すため)
+                   (if (= tcnt 0)
+                     (setq mism (cons nm2 mism))))
+                  (t
+                   ;; added が nil(外部参照など)、または属性を追加・取得できなかった場合
+                   (setq skipped (1+ skipped))))))
+           )
+           (princ (strcat "\n" (itoa objs) " 個のブロックに、合計 " (itoa cnt) " 項目をコピーしました。"
+                          (if (> skipped 0)
+                            (strcat "(対象外 " (itoa skipped) " 個)")
+                            "")))
+           ;; 1件もコピーできなかったブロックがあれば、原因がわかるようタグを一覧表示する
+           (if mism
+             (progn
+               (princ (strcat "\n一致するタグがなく、コピーできなかったブロック: "
+                              (apply (function strcat)
+                                     (mapcar (function (lambda (x) (strcat x " ")))
+                                             (num:uniq mism)))))
+               (princ (strcat "\nコピー元(" sname ")のタグ: "
+                              (apply (function strcat)
+                                     (mapcar (function (lambda (p) (strcat (car p) " ")))
+                                             satts))))
+             ))
           )
-          (princ "\nコピー先が選択されませんでした。")
         )
        )
      )
@@ -1042,5 +1253,251 @@
   (princ)
 )
 
-(princ "\nNUM(番号を付ける) / NUMX(個数つきCSV書き出し) / NUMA(ブロックに属性を追加) / NUMC(属性のコピー) を読み込みました。")
+;;; ---- NUMF : 属性の項目と値で検索する -------------------------
+
+(defun c:NUMF ( / *error* doc ss i ent obj a tg val key p pairs cnt sp
+                  labels keys chosen chosenKeys idx matches ss2 nm first)
+
+  (defun *error* (msg)
+    (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
+      (princ (strcat "\nエラー: " msg))
+    )
+    (princ)
+  )
+
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+
+  ;; 図面にある、属性を持つブロックから、「タグ+値」の組み合わせと件数を集める
+  (setq ss (ssget "_X" '((0 . "INSERT"))))
+  (setq pairs nil)
+  (if ss
+    (progn
+      (setq i 0)
+      (repeat (sslength ss)
+        (setq ent (ssname ss i) i (1+ i))
+        (setq obj (vlax-ename->vla-object ent))
+        (if (= (vla-get-HasAttributes obj) :vlax-true)
+          (foreach a (vlax-invoke obj 'GetAttributes)
+            (setq tg (vla-get-TagString a) val (vla-get-TextString a))
+            (if (/= (vl-string-trim " " val) "")
+              (progn
+                (setq key (strcat tg (chr 1) val))
+                (setq p (assoc key pairs))
+                (if p
+                  (setq pairs (subst (cons key (1+ (cdr p))) p pairs))
+                  (setq pairs (cons (cons key 1) pairs)))
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  (cond
+    ((not pairs)
+     (princ "\n属性を持つブロックが見つかりません。"))
+    (t
+     ;; タグ名→値の順で並べ、「タグ: 値 (N件)」の一覧と、対応するキーの一覧を作る
+     (setq pairs (vl-sort pairs (function (lambda (a b) (< (car a) (car b))))))
+     (setq labels nil keys nil)
+     (foreach p pairs
+       (setq key (car p) cnt (cdr p))
+       (setq sp (vl-string-search (chr 1) key))
+       (setq tg (substr key 1 sp) val (substr key (+ sp 2)))
+       (setq labels (cons (strcat tg ": " val " (" (itoa cnt) "件)") labels))
+       (setq keys (cons key keys))
+     )
+     (setq labels (reverse labels) keys (reverse keys))
+
+     ;; PowerShellのダイアログで、検索したい「タグ: 値」を選んでもらう(複数可)
+     (setq chosen (num:wpf-checklist "検索する項目・値を選択" labels))
+
+     (cond
+       ((not chosen)
+        (princ "\nキャンセルされたか、何も選ばれませんでした。"))
+       (t
+        ;; 選んだ表示名から、対応するキー(タグ+値)を逆引きする
+        (setq chosenKeys nil)
+        (foreach c chosen
+          (setq idx (num:index-of c labels))
+          (if idx (setq chosenKeys (cons (nth idx keys) chosenKeys)))
+        )
+        ;; いずれかの選んだ組み合わせを持つブロックを集める(1つのブロックは1回だけ数える)
+        (setq matches nil i 0)
+        (repeat (sslength ss)
+          (setq ent (ssname ss i) i (1+ i))
+          (setq obj (vlax-ename->vla-object ent))
+          (if (= (vla-get-HasAttributes obj) :vlax-true)
+            (foreach a (vlax-invoke obj 'GetAttributes)
+              (setq tg (vla-get-TagString a) val (vla-get-TextString a))
+              (if (and (member (strcat tg (chr 1) val) chosenKeys)
+                       (not (member ent matches)))
+                (setq matches (cons ent matches)))
+            )
+          )
+        )
+        (setq matches (reverse matches))
+        (cond
+          ((not matches)
+           (princ "\n一致するものが見つかりませんでした。"))
+          (t
+           ;; 見つかった対象を、図面上で選択状態にする(続けてNUMCなどに使える)
+           (setq ss2 (ssadd))
+           (foreach ent matches (ssadd ent ss2))
+           (sssetfirst nil ss2)
+           (princ (strcat "\n" (itoa (length matches)) " 件見つかりました(図面上で選択状態にしました):"))
+           (foreach ent matches
+             (setq obj (vlax-ename->vla-object ent)
+                   nm  (vla-get-EffectiveName obj)
+                   first T)
+             (princ (strcat "\n ・" nm))
+             (foreach a (vlax-invoke obj 'GetAttributes)
+               (setq tg (vla-get-TagString a) val (vla-get-TextString a))
+               (if (member (strcat tg (chr 1) val) chosenKeys)
+                 (progn
+                   (princ (strcat (if first "  " ", ") tg "=" val))
+                   (setq first nil))
+               )
+             )
+           )
+          )
+        )
+       )
+     )
+    )
+  )
+  (princ)
+)
+
+;;; ---- NUMI : 属性の項目を選んでコピーする(PowerShellダイアログ版) ----
+
+(defun c:NUMI ( / *error* doc s0 sh sObj satts sname stags choices chosen chosenU
+                  ss i tEnt tObj a tag v cnt objs skipped tcnt mism nm2 added pre targets)
+
+  (defun *error* (msg)
+    (if (and msg (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*")))
+      (princ (strcat "\nエラー: " msg))
+    )
+    (princ)
+  )
+
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+
+  ;; コマンドの実行前にすでに選択されていれば、それを使う。
+  ;; 選択の1個目をコピー元にする。2個以上選んでいれば、残りはコピー先にする
+  ;; (1個だけの場合は、コピー先はこのあと改めて選んでもらう)。
+  (setq pre (ssget "_I" '((0 . "INSERT"))))
+  (sssetfirst nil nil)
+  (if pre
+    (progn
+      (setq s0 (list (ssname pre 0)))
+      (setq targets nil i 1)
+      (repeat (1- (sslength pre))
+        (setq targets (cons (ssname pre i) targets) i (1+ i)))
+      (setq targets (reverse targets))
+      (princ (strcat "\n選択済みの1個目をコピー元にします"
+                     (if targets
+                       (strcat "(残り " (itoa (length targets)) " 個をコピー先にします)")
+                       ""))))
+    (progn
+      (setq s0 (entsel "\nコピー元のブロック(属性が入っているもの)を選択: "))
+      (setq targets nil))
+  )
+
+  (cond
+    ((not s0)
+     (princ "\n対象が選択されませんでした。"))
+    ((/= (cdr (assoc 0 (entget (car s0)))) "INSERT")
+     (princ "\nブロックを選択してください。"))
+    (t
+     (setq sh    (cdr (assoc 5 (entget (car s0))))
+           sObj  (vlax-ename->vla-object (car s0))
+           sname (vla-get-EffectiveName sObj)
+           satts (num:atts sObj)
+           stags (num:att-tags sObj))
+     (cond
+       ((not satts)
+        (princ "\nこのブロックには属性がありません。"))
+       (t
+        ;; コピーできる項目(什器Noは常に除く)を、PowerShellのダイアログで選んでもらう
+        (setq choices nil)
+        (foreach tag stags
+          (if (not (member (strcase tag) (mapcar 'strcase *numc-skip*)))
+            (setq choices (cons tag choices))))
+        (setq choices (reverse choices))
+        (setq chosen (num:wpf-checklist (strcat "コピーする項目(" sname ")") choices))
+        (cond
+          ((not chosen)
+           (princ "\nキャンセルされたか、項目が選ばれませんでした。"))
+          (t
+           (setq chosenU (mapcar 'strcase chosen))
+           (princ (strcat "\nコピーする項目: "
+                          (apply (function strcat) (mapcar (function (lambda (x) (strcat x " "))) chosen))))
+           ;; 事前選択がなかった場合だけ、ここでコピー先を選んでもらう
+           (if (not targets)
+             (progn
+               (princ "\nコピー先のブロックを選択(複数可・窓選択も可)してください")
+               (if (setq ss (ssget '((0 . "INSERT"))))
+                 (progn
+                   (setq targets nil i 0)
+                   (repeat (sslength ss)
+                     (setq targets (cons (ssname ss i) targets) i (1+ i)))
+                   (setq targets (reverse targets))))))
+           (cond
+             ((not targets)
+              (princ "\nコピー先が選択されませんでした。"))
+             (t
+              (setq cnt 0 objs 0 skipped 0 mism nil)
+              (foreach tEnt targets
+                (cond
+                  ((= (cdr (assoc 5 (entget tEnt))) sh)
+                   (setq skipped (1+ skipped)))
+                  ((/= (cdr (assoc 0 (entget tEnt))) "INSERT")
+                   (setq skipped (1+ skipped)))
+                  (t
+                   (setq tObj (vlax-ename->vla-object tEnt)
+                         nm2  (vla-get-EffectiveName tObj))
+                   ;; 選んだ項目のうち、このブロックにまだないものだけを追加する(もとからある、
+                   ;; 関係のない属性には触れない)。足りた項目は、値をコピー元で置き換える。
+                   (setq added (num:ensure-tags nm2 chosen))
+                   (if (and added (> added 0))
+                     (setq tObj (vlax-ename->vla-object tEnt)))
+                   (cond
+                     ((and added (= (vla-get-HasAttributes tObj) :vlax-true))
+                      (setq objs (1+ objs) tcnt 0)
+                      (foreach a (vlax-invoke tObj 'GetAttributes)
+                        (setq tag (strcase (vla-get-TagString a)))
+                        (if (and (member tag chosenU)
+                                 (setq v (cdr (assoc tag satts))))
+                          (progn
+                            (vla-put-TextString a v)
+                            (setq cnt (1+ cnt) tcnt (1+ tcnt))))
+                      )
+                      (if (= tcnt 0)
+                        (setq mism (cons nm2 mism))))
+                     (t
+                      (setq skipped (1+ skipped))))))
+              )
+              (princ (strcat "\n" (itoa objs) " 個のブロックに、合計 " (itoa cnt) " 項目をコピーしました。"
+                             (if (> skipped 0)
+                               (strcat "(対象外 " (itoa skipped) " 個)")
+                               "")))
+              (if mism
+                (princ (strcat "\n選んだ項目が1つもコピーできなかったブロック: "
+                               (apply (function strcat)
+                                      (mapcar (function (lambda (x) (strcat x " ")))
+                                              (num:uniq mism))))))
+             )
+           )
+          )
+        )
+       )
+     )
+    )
+  )
+  (princ)
+)
+
+(princ "\nNUM(番号を付ける) / NUMX(個数つきCSV書き出し) / NUMA(ブロックに属性を追加) / NUMC(属性のコピー) / NUMF(属性の検索) / NUMI(項目選択コピー) を読み込みました。")
 (princ)
