@@ -6,6 +6,26 @@
 ;;;  文字列として埋め込まれており、実行のたびに一時フォルダへ
 ;;;  自動的に書き出されます(qse-write-ps1-script関数)。
 ;;;
+;;;  v11での変更点(見直し):
+;;;   ・画層名・線種名・ブロック名・文字列内容に # @ . * ? , [ ] などが
+;;;     含まれるとssgetのワイルドカードとして解釈され、意図しない
+;;;     オブジェクトまで選択されていたのを修正(` でエスケープ)
+;;;   ・ダイナミックブロックが "*U123" のような匿名名で表示され、選ぶと
+;;;     全ブロックがヒットしていたのを修正(実効名 EffectiveName で集計・判定)
+;;;   ・ブロック名の条件がHATCHのパターン名(グループコード2)にも
+;;;     ヒットしていたのを修正(ブロック参照のみを対象に判定)
+;;;   ・属性(ATTRIB)の値やオブジェクトタイプ「属性」を選んでも、ssgetは
+;;;     属性を直接選べないため常に0件だったのを修正。属性値に一致する
+;;;     ブロック参照を選択するようにした
+;;;   ・回転角度は丸めた値の完全一致ではなく ±0.005° の範囲で判定する
+;;;     (0°と360°付近も同一視)。円弧(ARC)のグループコード50は
+;;;     「開始角度」なので回転角度の一覧・条件から除外
+;;;   ・「図面全体から検索」で他のレイアウトのオブジェクトまで
+;;;     選択されていたのを修正(現在の空間のみ)
+;;;   ・検索欄に文字を入力すると、それまでの選択が消えていたのを修正
+;;;     (絞り込みで隠れた項目の選択も保持される)
+;;;   ・選択中にEscで中断したとき一時ファイルが残らないようにした
+;;;
 ;;;  v10での変更点:
 ;;;   ・ロックされたレイヤー・凍結されたレイヤーのオブジェクトを除外する。
 ;;;     基準オブジェクトの中にこれらが含まれていても、条件設定(各項目欄の
@@ -622,6 +642,15 @@
   (write-line "        }" fn)
   (write-line "        [void]$stack.Children.Add($listBox)" fn)
   (write-line "" fn)
+  (write-line "        # 選択状態は値(Tag)の集合として別に持つ。検索欄で絞り込むと一覧を" fn)
+  (write-line "        # 作り直すため、ListBoxの選択だけに頼ると隠れた項目の選択が消えてしまう" fn)
+  (write-line "        $state = @{ Sel = (New-Object 'System.Collections.Generic.HashSet[string]'); Rebuilding = $false }" fn)
+  (write-line "        $listBox.Add_SelectionChanged({" fn)
+  (write-line "            if ($state.Rebuilding) { return }" fn)
+  (write-line "            foreach ($i in $_.AddedItems)   { [void]$state.Sel.Add([string]$i.Tag) }" fn)
+  (write-line "            foreach ($i in $_.RemovedItems) { [void]$state.Sel.Remove([string]$i.Tag) }" fn)
+  (write-line "        }.GetNewClosure())" fn)
+  (write-line "" fn)
   (write-line "        # 項目欄(タイトル部分)を押すと一覧を展開/折りたたみする" fn)
   (write-line "        # (状態はListBox自身のTagプロパティに持たせる。スクリプトブロックの" fn)
   (write-line "        #  ローカル変数に頼るより確実に状態が引き継がれるため)" fn)
@@ -675,11 +704,13 @@
   (write-line "" fn)
   (write-line "        $btnNone.Add_Click({" fn)
   (write-line "            $listBox.SelectedItems.Clear()" fn)
+  (write-line "            $state.Sel.Clear()" fn)
   (write-line "        }.GetNewClosure())" fn)
   (write-line "" fn)
   (write-line "        if ($HasSearch) {" fn)
   (write-line "            $searchBox.Add_TextChanged({" fn)
   (write-line "                $f = $searchBox.Text" fn)
+  (write-line "                $state.Rebuilding = $true" fn)
   (write-line "                $listBox.Items.Clear()" fn)
   (write-line "                for ($idx = 0; $idx -lt $Values.Count; $idx++) {" fn)
   (write-line "                    $disp = $Displays[$idx]" fn)
@@ -688,8 +719,10 @@
   (write-line "                        $lbi.Content = $disp" fn)
   (write-line "                        $lbi.Tag = $Values[$idx]" fn)
   (write-line "                        [void]$listBox.Items.Add($lbi)" fn)
+  (write-line "                        if ($state.Sel.Contains([string]$Values[$idx])) { [void]$listBox.SelectedItems.Add($lbi) }" fn)
   (write-line "                    }" fn)
   (write-line "                }" fn)
+  (write-line "                $state.Rebuilding = $false" fn)
   (write-line "            }.GetNewClosure())" fn)
   (write-line "" fn)
   (write-line "            $searchBox.Add_PreviewKeyDown({" fn)
@@ -697,7 +730,7 @@
   (write-line "            }.GetNewClosure())" fn)
   (write-line "        }" fn)
   (write-line "" fn)
-  (write-line "        return [PSCustomObject]@{ Card = $card; ListBox = $listBox; Values = $Values; Displays = $Displays }" fn)
+  (write-line "        return [PSCustomObject]@{ Card = $card; ListBox = $listBox; Values = $Values; Displays = $Displays; State = $state }" fn)
   (write-line "    }" fn)
   (write-line "" fn)
   (write-line "    $cardType  = New-SectionCard -Title \"[1] オブジェクトタイプ\"     -Values $typeValues -Displays $typeDisplays -HasSearch $false -AccentColor \"#2F6FBD\" -Res $window.Resources -Overlay $expandOverlay -OverlayGrid $overlayGrid -MaxDialogHeight $window.MaxHeight" fn)
@@ -730,32 +763,29 @@
   (write-line "" fn)
   (write-line "    $script:written = $false" fn)
   (write-line "" fn)
-  (write-line "    # ListBoxItemでラップされた選択済み項目から、表示用ラベルではなく" fn)
-  (write-line "    # 実際の値(Tag)を取り出す(オブジェクトタイプの日本語表示対応のため)" fn)
+  (write-line "    # 選択済みの値は、表示用ラベルではなく実際の値(Tag)の集合から取り出す" fn)
+  (write-line "    # (検索欄の絞り込みで隠れている項目の選択も含める)" fn)
   (write-line "    function Get-TagValues {" fn)
-  (write-line "        param($Collection)" fn)
+  (write-line "        param($CardObj)" fn)
   (write-line "        $out = New-Object System.Collections.Generic.List[string]" fn)
-  (write-line "        foreach ($item in $Collection) { $out.Add([string]$item.Tag) }" fn)
+  (write-line "        if ($CardObj) { foreach ($v in $CardObj.State.Sel) { $out.Add($v) } }" fn)
   (write-line "        return $out" fn)
   (write-line "    }" fn)
   (write-line "" fn)
   (write-line "    function Save-Result {" fn)
   (write-line "        param([string]$Status)" fn)
-  (write-line "        $selBlk = @()" fn)
-  (write-line "        if ($cardBlk) { $selBlk = @(Get-TagValues $cardBlk.ListBox.SelectedItems) }" fn)
-  (write-line "        $selTxt = @()" fn)
-  (write-line "        if ($cardTxt) { $selTxt = @(Get-TagValues $cardTxt.ListBox.SelectedItems) }" fn)
-  (write-line "        $selAngle = @()" fn)
-  (write-line "        if ($cardAngle) { $selAngle = @(Get-TagValues $cardAngle.ListBox.SelectedItems) }" fn)
+  (write-line "        $selBlk   = @(Get-TagValues $cardBlk)" fn)
+  (write-line "        $selTxt   = @(Get-TagValues $cardTxt)" fn)
+  (write-line "        $selAngle = @(Get-TagValues $cardAngle)" fn)
   (write-line "        if ($radioAll.IsChecked) { $range = \"all\" }" fn)
   (write-line "        elseif ($radioPolygon.IsChecked) { $range = \"polygon\" }" fn)
   (write-line "        else { $range = \"window\" }" fn)
   (write-line "" fn)
   (write-line "        Write-ResultFile -Path $OutputPath -Status $Status `" fn)
-  (write-line "            -SelType  @(Get-TagValues $cardType.ListBox.SelectedItems) `" fn)
-  (write-line "            -SelLayer @(Get-TagValues $cardLayer.ListBox.SelectedItems) `" fn)
-  (write-line "            -SelColor @(Get-TagValues $cardColor.ListBox.SelectedItems) `" fn)
-  (write-line "            -SelLtype @(Get-TagValues $cardLtype.ListBox.SelectedItems) `" fn)
+  (write-line "            -SelType  @(Get-TagValues $cardType) `" fn)
+  (write-line "            -SelLayer @(Get-TagValues $cardLayer) `" fn)
+  (write-line "            -SelColor @(Get-TagValues $cardColor) `" fn)
+  (write-line "            -SelLtype @(Get-TagValues $cardLtype) `" fn)
   (write-line "            -SelBlk   $selBlk `" fn)
   (write-line "            -SelTxt   $selTxt `" fn)
   (write-line "            -SelAngle $selAngle `" fn)
@@ -788,7 +818,7 @@
   (write-line "" fn)
   (write-line "    $btnReset.Add_Click({" fn)
   (write-line "        foreach ($c in @($cardType, $cardLayer, $cardColor, $cardLtype, $cardBlk, $cardTxt, $cardAngle)) {" fn)
-  (write-line "            if ($c) { $c.ListBox.SelectedItems.Clear() }" fn)
+  (write-line "            if ($c) { $c.ListBox.SelectedItems.Clear(); $c.State.Sel.Clear() }" fn)
   (write-line "        }" fn)
   (write-line "        $radioAll.IsChecked = $true" fn)
   (write-line "    })" fn)
@@ -894,49 +924,120 @@
   (and layerTbl (/= (logand (cdr (assoc 70 layerTbl)) 5) 0))
 )
 
+;; ssgetの文字列フィルタはワイルドカード(wcmatch)として解釈されるため、
+;; 特殊文字の前に ` を付けて文字どおりに一致させる
+(defun qse-escape-wild (s / out i ch)
+  (setq out "" i 1)
+  (repeat (strlen s)
+    (setq ch (substr s i 1))
+    (if (vl-string-search ch "#@.*?~[]-,`")
+      (setq out (strcat out "`" ch))
+      (setq out (strcat out ch))
+    )
+    (setq i (1+ i))
+  )
+  out
+)
+
 ;; 複数選択された値からssgetフィルタのサブリストを作る
 (defun qse-make-subfilter (dxfCode valList / subLst itemVal)
-  (if (> (length valList) 1)
-    (progn
-      (setq subLst (list '(-4 . "<OR")))
-      (foreach itemVal valList
-        (cond
-          ((= dxfCode 62)
-           (if (= itemVal "256 (ByLayer)")
-             (setq subLst (append subLst (list '(62 . 256))))
-             (setq subLst (append subLst (list (cons 62 (atoi itemVal)))))
-           )
+  (setq subLst '())
+  (foreach itemVal valList
+    (setq subLst
+      (append subLst
+        (list
+          (cond
+            ((= dxfCode 62)
+             (if (= itemVal "256 (ByLayer)") '(62 . 256) (cons 62 (atoi itemVal)))
+            )
+            (T (cons dxfCode (qse-escape-wild itemVal)))
           )
-          ;; 回転角度: 度数(文字列)をラジアンに変換してから渡す
-          ((= dxfCode 50)
-           (setq subLst (append subLst (list (cons 50 (* (atof itemVal) (/ pi 180.0))))))
-          )
-          (T
-           (setq subLst (append subLst (list (cons dxfCode itemVal))))
-          )
-        )
-      )
-      (append subLst (list '(-4 . "OR>")))
-    )
-    (progn
-      (setq itemVal (car valList))
-      (cond
-        ((= dxfCode 62)
-         (if (= itemVal "256 (ByLayer)")
-           (list '(62 . 256))
-           (list (cons 62 (atoi itemVal)))
-         )
-        )
-        ;; 回転角度: 度数(文字列)をラジアンに変換してから渡す
-        ((= dxfCode 50)
-         (list (cons 50 (* (atof itemVal) (/ pi 180.0))))
-        )
-        (T
-         (list (cons dxfCode itemVal))
         )
       )
     )
   )
+  (if (> (length subLst) 1)
+    (append (list '(-4 . "<OR")) subLst (list '(-4 . "OR>")))
+    subLst
+  )
+)
+
+;; 回転角度(度数の文字列リスト)からssgetフィルタを作る。
+;; 一覧は小数点2桁に丸めた値なので、完全一致ではなく ±0.005° の範囲で判定する。
+;; 0°は360°付近の値も含める。ARCのグループコード50は開始角度なので除外する
+(defun qse-angle-range (lo hi)
+  (list '(-4 . "<AND") '(-4 . ">=") (cons 50 lo) '(-4 . "<=") (cons 50 hi) '(-4 . "AND>"))
+)
+(defun qse-make-angle-filter (valList / tol d subLst)
+  (setq tol (* 0.005 (/ pi 180.0)) subLst '())
+  (foreach v valList
+    (setq d (* (atof v) (/ pi 180.0)))
+    (setq subLst (append subLst (qse-angle-range (- d tol) (+ d tol))))
+    (if (< d tol)
+      (setq subLst (append subLst (qse-angle-range (- (* 2.0 pi) tol) (* 2.0 pi))))
+    )
+  )
+  (append (list '(-4 . "<NOT") '(0 . "ARC") '(-4 . "NOT>") '(-4 . "<OR"))
+          subLst
+          (list '(-4 . "OR>")))
+)
+
+;; ブロック参照のブロック名を返す。ダイナミックブロックは "*U123" のような
+;; 匿名名になっているので、実効名(EffectiveName)に置き換える
+(defun qse-block-name (ent entData / nm obj r)
+  (setq nm (cdr (assoc 2 entData)))
+  (if (and nm (= (substr nm 1 1) "*"))
+    (progn
+      (setq obj (vl-catch-all-apply 'vlax-ename->vla-object (list ent)))
+      (if (not (vl-catch-all-error-p obj))
+        (progn
+          (setq r (vl-catch-all-apply 'vla-get-EffectiveName (list obj)))
+          (if (and r (not (vl-catch-all-error-p r))) (setq nm r))
+        )
+      )
+    )
+  )
+  nm
+)
+
+;; ブロック参照にぶら下がる属性(ATTRIB)のうち、値がtxtListに含まれるものがあるか
+(defun qse-insert-has-att-text (ent txtList / attEnt attData found)
+  (setq attEnt (entnext ent))
+  (while (and attEnt (not found)
+              (/= (cdr (assoc 0 (setq attData (entget attEnt)))) "SEQEND"))
+    (if (and (= (cdr (assoc 0 attData)) "ATTRIB")
+             (member (cdr (assoc 1 attData)) txtList))
+      (setq found T)
+    )
+    (setq attEnt (entnext attEnt))
+  )
+  found
+)
+
+;; ssgetで絞り込めない条件(ブロック実効名・文字列内容・属性)をLISP側で判定する
+;;   selBlks : ブロック参照で、実効名が一覧に含まれること
+;;   selTxts : TEXT/MTEXT/ATTDEFは内容が一致、ブロック参照は属性値が一致すること
+;;   attOnly : タイプ「属性」が選ばれ「ブロック参照」は選ばれていないとき、
+;;             ブロック参照は属性付きのものに限る
+(defun qse-post-match (ent entData selBlks selTxts attOnly / typ ok)
+  (setq typ (cdr (assoc 0 entData)) ok T)
+  (if (and attOnly (= typ "INSERT") (/= (cdr (assoc 66 entData)) 1))
+    (setq ok nil)
+  )
+  (if (and ok selBlks)
+    (setq ok (and (= typ "INSERT") (member (qse-block-name ent entData) selBlks)))
+  )
+  (if (and ok selTxts)
+    (setq ok
+      (cond
+        ((member typ '("TEXT" "MTEXT" "ATTDEF")) (member (cdr (assoc 1 entData)) selTxts))
+        ((and (= typ "INSERT") (= (cdr (assoc 66 entData)) 1))
+         (qse-insert-has-att-text ent selTxts))
+        (T nil)
+      )
+    )
+  )
+  ok
 )
 
 ;; ---------- 閉じたポリライン内選択 用ヘルパー (v7で追加) ----------
@@ -996,8 +1097,20 @@
                    inFile outFile ps1File fn result
                    selTypes selLayers selColors selLtypes selBlks selTxts selAngles
                    selRange selResult errMsg
-                   filterList ssFilter polyPts lastRange )
+                   filterList ssFilter polyPts lastRange
+                   ent attOnly blkPat *error* )
   (vl-load-com)
+
+  ;; Escなどで中断したときも一時ファイルを残さない
+  (defun *error* (msg)
+    (foreach f (list inFile outFile ps1File)
+      (if (and f (findfile f)) (vl-file-delete f))
+    )
+    (if (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*"))
+      (princ (strcat "\nエラー: " msg))
+    )
+    (princ)
+  )
 
   ;; ---------- 1. 基準オブジェクトの選択 ----------
   (princ "\n基準となるオブジェクトを選択してください（複数選択可、選択後Enter）: ")
@@ -1036,14 +1149,17 @@
 
             ;; 回転角度(DXFグループコード50、ラジアン)を度数に変換し、
             ;; 0〜360度の範囲に正規化して小数点2桁に丸めたうえで件数集計する。
-            ;; 回転の概念がないオブジェクト(LINE/CIRCLEなど)は単に無視される
-            (setq rotVal (cdr (assoc 50 entData)))
+            ;; 回転の概念がないオブジェクト(LINE/CIRCLEなど)は単に無視される。
+            ;; ARCのグループコード50は「開始角度」で回転角度ではないので除外する
+            (setq rotVal (if (/= objType "ARC") (cdr (assoc 50 entData))))
             (if rotVal
               (progn
                 (setq rotDeg (* rotVal (/ 180.0 pi)))
                 (while (< rotDeg 0.0)    (setq rotDeg (+ rotDeg 360.0)))
                 (while (>= rotDeg 360.0) (setq rotDeg (- rotDeg 360.0)))
                 (setq rotKey (rtos rotDeg 2 2))
+                ;; 359.996° などは丸めると "360.00" になるので 0° として扱う
+                (if (>= (atof rotKey) 360.0) (setq rotKey (rtos 0.0 2 2)))
                 (setq angleCountAlist (qse-count-inc angleCountAlist rotKey))
               )
             )
@@ -1054,7 +1170,7 @@
             ;; (これが「オブジェクトの中にある文字・ブロックを選ぶ」機能 v6)
             (if (= objType "INSERT")
               (progn
-                (setq blkName (cdr (assoc 2 entData)))
+                (setq blkName (qse-block-name (ssname ssBase i) entData))
                 (if blkName
                   (setq blkCountAlist (qse-count-inc blkCountAlist blkName)))
 
@@ -1190,20 +1306,41 @@
              )
 
              ;; ---------- 5. ssgetフィルタの構築 ----------
+             ;; 属性(ATTRIB)はssgetで直接選べないので、タイプ「属性」は
+             ;; ブロック参照に置き換え、属性付きかどうかは後段で判定する
+             (setq attOnly (and (member "ATTRIB" selTypes) (not (member "INSERT" selTypes))))
+             (if (member "ATTRIB" selTypes)
+               (setq selTypes (cons "INSERT" (vl-remove "INSERT" (vl-remove "ATTRIB" selTypes))))
+             )
+
              (setq filterList '())
              (if selTypes  (setq filterList (append filterList (qse-make-subfilter 0 selTypes))))
              (if selLayers (setq filterList (append filterList (qse-make-subfilter 8 selLayers))))
              (if selColors (setq filterList (append filterList (qse-make-subfilter 62 selColors))))
              (if selLtypes (setq filterList (append filterList (qse-make-subfilter 6 selLtypes))))
-             (if selBlks   (setq filterList (append filterList (qse-make-subfilter 2 selBlks))))
-             (if selTxts   (setq filterList (append filterList (qse-make-subfilter 1 selTxts))))
-             (if selAngles (setq filterList (append filterList (qse-make-subfilter 50 selAngles))))
+             ;; ブロック名は実効名で判定するので、ssgetではブロック参照かつ
+             ;; 「指定名 または 匿名ブロック(*U...)」まで絞り込み、最終判定は後段で行う
+             (if selBlks
+               (progn
+                 (setq blkPat "`*U*")
+                 (foreach v selBlks (setq blkPat (strcat (qse-escape-wild v) "," blkPat)))
+                 (setq filterList (append filterList (list '(0 . "INSERT") (cons 2 blkPat))))
+               )
+             )
+             ;; 文字列内容(属性値を含む)はssgetで判定できないので後段で行う
+             (if selAngles (setq filterList (append filterList (qse-make-angle-filter selAngles))))
 
              (cond
                ((= selRange "all")
-                (if filterList
-                  (setq ssFilter (ssget "X" filterList))
-                  (setq ssFilter (ssget "X"))
+                ;; 図面全体の検索は現在の空間(モデル/現在のレイアウト)に限る
+                (setq ssFilter
+                  (ssget "X"
+                    (append filterList
+                      (list (cons 410 (if (and (= (getvar "TILEMODE") 0) (= (getvar "CVPORT") 1))
+                                        (getvar "CTAB")
+                                        "Model")))
+                    )
+                  )
                 )
                )
                ((= selRange "polygon")
@@ -1229,15 +1366,18 @@
              ;; 「画面上で対象を選択」「閉じたポリラインの内側」はAutoCAD標準の
              ;; ピック動作により通常はこれらが選択候補に入らないが、
              ;; 「図面全体から検索」(ssget "X")はロック・凍結を無視して
-             ;; ヒットするため、ここで検索範囲によらず統一して除外する
+             ;; ヒットするため、ここで検索範囲によらず統一して除外する。
+             ;; あわせて、ssgetで判定できない条件(ブロック実効名・文字列内容・属性)もここで判定する
              (if ssFilter
                (progn
                  (setq i (sslength ssFilter))
                  (while (> i 0)
                    (setq i (1- i))
-                   (setq layerName (cdr (assoc 8 (entget (ssname ssFilter i)))))
-                   (if (qse-layer-locked-or-frozen layerName)
-                     (setq ssFilter (ssdel (ssname ssFilter i) ssFilter))
+                   (setq ent (ssname ssFilter i))
+                   (setq entData (entget ent))
+                   (if (or (qse-layer-locked-or-frozen (cdr (assoc 8 entData)))
+                           (not (qse-post-match ent entData selBlks selTxts attOnly)))
+                     (setq ssFilter (ssdel ent ssFilter))
                    )
                  )
                  (if (= (sslength ssFilter) 0) (setq ssFilter nil))
@@ -1264,5 +1404,5 @@
   )
   (princ)
 )
-(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v10:ロック凍結レイヤー除外・[7]回転角度を追加・フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
+(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v11:ワイルドカード文字/ダイナミックブロック/属性値の選択を修正・v10:ロック凍結レイヤー除外・[7]回転角度を追加・フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
 (princ)
