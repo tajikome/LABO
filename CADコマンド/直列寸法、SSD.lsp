@@ -2,7 +2,7 @@
 ;; SSD: 直列寸法 / SDS: 直列寸法ライン付き
 
 ;; ---------- SSD ----------
-(defun c:SSD (/ *error* check-layer oldCmdecho oldLayer oldDimlayer oldDimexo oldClrD oldClrE oldClrT res dColor overrideColor pt1 pt2 ptLoc curPt loop set-prop history dimEnt lastOp get-dim-color calc-ptLoc color-name offDist)
+(defun c:SSD (/ prevDist follow-pt calc-follow *error* check-layer oldCmdecho oldLayer oldDimlayer oldDimexo oldClrD oldClrE oldClrT res dColor overrideColor pt1 pt2 ptLoc curPt loop set-prop history dimEnt lastOp get-dim-color calc-ptLoc color-name offDist)
   
   ;; ==========================================
   ;;  設定エリア
@@ -29,9 +29,9 @@
   
   (setq oldLayer (getvar "CLAYER"))
   
-  ;; 寸法補助線のオフセット（DIMEXO）を「200」に設定
+  ;; 寸法補助線のオフセット（DIMEXO）を「2」に設定
   (setq oldDimexo (getvar "DIMEXO"))
-  (setvar "DIMEXO" 200)
+  (setvar "DIMEXO" 2)
 
   ;; 寸法の線/補助線/文字の色を「ByBlock」にして、図形の色(黄など)が反映されるようにする
   (setq oldClrD (getvar "DIMCLRD") oldClrE (getvar "DIMCLRE") oldClrT (getvar "DIMCLRT"))
@@ -109,6 +109,55 @@
     )
   )
 
+  ;; --- カーソル位置から方向(水平/垂直の近い方)を決め、base から dist 先の点を返す関数 ---
+  (defun calc-follow (base cur dist / dx dy)
+    (setq dx (- (car cur) (car base)))
+    (setq dy (- (cadr cur) (cadr base)))
+    (if (>= (abs dx) (abs dy))
+      (list (+ (car base) (if (>= dx 0) dist (- dist))) (cadr base) (caddr base))
+      (list (car base) (+ (cadr base) (if (>= dy 0) dist (- dist))) (caddr base))
+    )
+  )
+
+  ;; --- 寸法値(dist)固定で、カーソルの方向に追従して点を指示する関数 ---
+  ;; クリック/Enter/スペース/右クリックで確定、ESCで nil(終了)
+  (defun follow-pt (base dist defPt / gr code val pt done result drw sz)
+    (setq sz (/ dist 15.0))
+    ;; 追従プレビュー(線+先端の十字)を描く
+    (defun drw (b p)
+      (redraw)
+      (grdraw b p 1 0)
+      (grdraw (polar p 0.0 sz) (polar p pi sz) 1 0)
+      (grdraw (polar p (/ pi 2) sz) (polar p (* 1.5 pi) sz) 1 0)
+    )
+    (princ (strcat "\n寸法値 " (rtos dist) " : カーソルを動かして方向を指示しクリック (Enterで確定 / ESCで終了)"))
+    (setq pt defPt done nil result nil)
+    (drw base pt)
+    (while (not done)
+      (setq gr (grread T 15 0) code (car gr) val (cadr gr))
+      (cond
+        ((and (= code 5) (listp val))
+          (setq pt (calc-follow base val dist))
+          (drw base pt)
+        )
+        ((and (= code 3) (listp val))
+          (setq result (calc-follow base val dist) done T)
+        )
+        ((and (= code 2) (member val '(13 32)))
+          (setq result pt done T)
+        )
+        ((member code '(11 12 25))
+          (setq result pt done T)
+        )
+        ((and (= code 2) (= val 27))
+          (setq done T)
+        )
+      )
+    )
+    (redraw)
+    result
+  )
+
   ;; 1. 最初の段階での色選択
   (initget "A R Y G C B M W BYL")
   (setq res (getkword "\n初期寸法線の色を選択 [自動(A)/赤(R)/黄(Y)/緑(G)/水色(C)/青(B)/紫(M)/白黒(W)/ByLayer(ByL)] : "))
@@ -143,17 +192,32 @@
       (setq curPt pt2 loop T)
 
       (while loop
-        (initget "R Y G C B M W BYL A U")
+        (initget "R Y G C B M W BYL A U E")
         (setq res (getpoint curPt 
           (strcat "\n[現在色:" (if overrideColor (strcat "手動(" (color-name overrideColor) ")") "自動判定") 
-                  "] 次点指定 or 色変更(R/Y/G/C/B/M/W/ByL) 自動に戻す(A) 戻る(U): ")))
-        
+                  "] 次点指定 or 色変更(R/Y/G/C/B/M/W/ByL) 自動に戻す(A) 戻る(U) 終了(E) Enter=2つ前の寸法値(カーソル方向): ")))
+
+        ;; Enterのみ(入力なし)の場合: 2つ前の寸法の長さを、直前の線分と同じ方向に入力する
+        (if (and (null res) (>= (length history) 2))
+          (progn
+            (setq prevDist (distance (car (cadr history)) (cadr (cadr history))))
+            (if (> prevDist 1e-9)
+              (progn
+                (setq res (follow-pt curPt prevDist (polar curPt (angle (car (car history)) (cadr (car history))) prevDist)))
+              )
+            )
+          )
+        )
+
         (cond
           ((member res '("R" "Y" "G" "C" "B" "M" "W" "BYL"))
             (setq overrideColor (cond 
               ((= res "R") "1") ((= res "Y") "2") ((= res "G") "3") ((= res "C") "4") 
               ((= res "B") "5") ((= res "M") "6") ((= res "W") "7") (T "BYLAYER")))
             (princ (strcat "\n-> 寸法の色を [" (color-name overrideColor) "] に変更しました。"))
+          )
+          ((= res "E")
+            (setq loop nil)
           )
           ((= res "A")
             (setq overrideColor nil)
@@ -200,7 +264,7 @@
 )
 
 ;; ---------- SDS ----------
-(defun c:SDS (/ *error* check-layer oldCmdecho oldLayer oldDimlayer oldDimexo oldClrD oldClrE oldClrT res dColor overrideColor pt1 pt2 ptLoc curPt loop set-prop history lineEnt dimEnt lastOp get-dim-color calc-ptLoc color-name offDist)
+(defun c:SDS (/ prevDist follow-pt calc-follow *error* check-layer oldCmdecho oldLayer oldDimlayer oldDimexo oldClrD oldClrE oldClrT res dColor overrideColor pt1 pt2 ptLoc curPt loop set-prop history lineEnt dimEnt lastOp get-dim-color calc-ptLoc color-name offDist)
   
   ;; ==========================================
   ;;  設定エリア
@@ -227,9 +291,9 @@
   
   (setq oldLayer (getvar "CLAYER"))
   
-  ;; 寸法補助線のオフセット（DIMEXO）を「200」に設定
+  ;; 寸法補助線のオフセット（DIMEXO）を「2」に設定
   (setq oldDimexo (getvar "DIMEXO"))
-  (setvar "DIMEXO" 200)
+  (setvar "DIMEXO" 2)
 
   ;; 寸法の線/補助線/文字の色を「ByBlock」にして、図形の色(黄など)が反映されるようにする
   (setq oldClrD (getvar "DIMCLRD") oldClrE (getvar "DIMCLRE") oldClrT (getvar "DIMCLRT"))
@@ -307,6 +371,55 @@
     )
   )
 
+  ;; --- カーソル位置から方向(水平/垂直の近い方)を決め、base から dist 先の点を返す関数 ---
+  (defun calc-follow (base cur dist / dx dy)
+    (setq dx (- (car cur) (car base)))
+    (setq dy (- (cadr cur) (cadr base)))
+    (if (>= (abs dx) (abs dy))
+      (list (+ (car base) (if (>= dx 0) dist (- dist))) (cadr base) (caddr base))
+      (list (car base) (+ (cadr base) (if (>= dy 0) dist (- dist))) (caddr base))
+    )
+  )
+
+  ;; --- 寸法値(dist)固定で、カーソルの方向に追従して点を指示する関数 ---
+  ;; クリック/Enter/スペース/右クリックで確定、ESCで nil(終了)
+  (defun follow-pt (base dist defPt / gr code val pt done result drw sz)
+    (setq sz (/ dist 15.0))
+    ;; 追従プレビュー(線+先端の十字)を描く
+    (defun drw (b p)
+      (redraw)
+      (grdraw b p 1 0)
+      (grdraw (polar p 0.0 sz) (polar p pi sz) 1 0)
+      (grdraw (polar p (/ pi 2) sz) (polar p (* 1.5 pi) sz) 1 0)
+    )
+    (princ (strcat "\n寸法値 " (rtos dist) " : カーソルを動かして方向を指示しクリック (Enterで確定 / ESCで終了)"))
+    (setq pt defPt done nil result nil)
+    (drw base pt)
+    (while (not done)
+      (setq gr (grread T 15 0) code (car gr) val (cadr gr))
+      (cond
+        ((and (= code 5) (listp val))
+          (setq pt (calc-follow base val dist))
+          (drw base pt)
+        )
+        ((and (= code 3) (listp val))
+          (setq result (calc-follow base val dist) done T)
+        )
+        ((and (= code 2) (member val '(13 32)))
+          (setq result pt done T)
+        )
+        ((member code '(11 12 25))
+          (setq result pt done T)
+        )
+        ((and (= code 2) (= val 27))
+          (setq done T)
+        )
+      )
+    )
+    (redraw)
+    result
+  )
+
   ;; 1. 最初の段階での色選択
   (initget "A R Y G C B M W BYL")
   (setq res (getkword "\n初期寸法線の色を選択 [自動(A)/赤(R)/黄(Y)/緑(G)/水色(C)/青(B)/紫(M)/白黒(W)/ByLayer(ByL)] : "))
@@ -347,17 +460,32 @@
       (setq curPt pt2 loop T)
 
       (while loop
-        (initget "R Y G C B M W BYL A U")
+        (initget "R Y G C B M W BYL A U E")
         (setq res (getpoint curPt 
           (strcat "\n[現在色:" (if overrideColor (strcat "手動(" (color-name overrideColor) ")") "自動判定") 
-                  "] 次点指定 or 色変更(R/Y/G/C/B/M/W/ByL) 自動に戻す(A) 戻る(U): ")))
-        
+                  "] 次点指定 or 色変更(R/Y/G/C/B/M/W/ByL) 自動に戻す(A) 戻る(U) 終了(E) Enter=2つ前の寸法値(カーソル方向): ")))
+
+        ;; Enterのみ(入力なし)の場合: 2つ前の寸法の長さを、直前の線分と同じ方向に入力する
+        (if (and (null res) (>= (length history) 2))
+          (progn
+            (setq prevDist (distance (car (cadr history)) (cadr (cadr history))))
+            (if (> prevDist 1e-9)
+              (progn
+                (setq res (follow-pt curPt prevDist (polar curPt (angle (car (car history)) (cadr (car history))) prevDist)))
+              )
+            )
+          )
+        )
+
         (cond
           ((member res '("R" "Y" "G" "C" "B" "M" "W" "BYL"))
             (setq overrideColor (cond 
               ((= res "R") "1") ((= res "Y") "2") ((= res "G") "3") ((= res "C") "4") 
               ((= res "B") "5") ((= res "M") "6") ((= res "W") "7") (T "BYLAYER")))
             (princ (strcat "\n-> 寸法の色を [" (color-name overrideColor) "] に変更しました。"))
+          )
+          ((= res "E")
+            (setq loop nil)
           )
           ((= res "A")
             (setq overrideColor nil)

@@ -1,10 +1,22 @@
 ;;; ============================================================
-;;;  QS - クイック選択拡張 (v10: ロック・凍結レイヤーのオブジェクトを除外・[7]回転角度を追加・フルスクリーン展開時のマウスホイール対応・項目欄をフルスクリーン展開・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
+;;;  QS - クイック選択拡張 (v13: 検索範囲をUIから廃止しコマンドライン指定へ変更・v10: ロック・凍結レイヤーのオブジェクトを除外・[7]回転角度を追加・フルスクリーン展開時のマウスホイール対応・項目欄をフルスクリーン展開・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・単一項目の表示不具合修正)
 ;;;
 ;;;  必要なファイルは QS.lsp 1本だけです。コマンド名は "QS" です。
 ;;;  PowerShell(WPF)のダイアログ用スクリプトはこのファイルの中に
 ;;;  文字列として埋め込まれており、実行のたびに一時フォルダへ
 ;;;  自動的に書き出されます(qse-write-ps1-script関数)。
+;;;
+;;;  v13での変更点:
+;;;   ・ダイアログから「検索範囲」欄(ラジオボタン)を削除。範囲の指定は
+;;;     ダイアログで「適用」したあと、コマンドラインで行う方式に変更
+;;;       Enter        : AutoCAD標準の選択(窓=青/交差=緑の標準表示、クリックも可、繰り返し可)
+;;;       何も選ばずEnter: 図面全体(現在の空間)から検索
+;;;       P            : 閉じたポリラインを選び、その内側を選択
+;;;   ・前回値の記憶(QS_LastRange)は廃止
+;;;
+;;;  v12での変更点:
+;;;   ・[5]ブロック名の項目欄にも検索欄を追加(ブロック名の一部を入力すると
+;;;     一覧が絞り込まれる。大文字小文字は区別しない)
 ;;;
 ;;;  v11での変更点(見直し):
 ;;;   ・画層名・線種名・ブロック名・文字列内容に # @ . * ? , [ ] などが
@@ -48,7 +60,7 @@
 ;;;   ・ダイアログのウィンドウを大きく(幅1000→1200、一覧の高さ108→150 など)し、
 ;;;     UIの文字サイズは12に統一し、左右の項目欄の間隔も広げた(16→32)。
 ;;;     検索欄は上下の余白を詰めて低くした。
-;;;   ・「検索範囲」は前回選んだ値で起動する。値はAutoCAD環境変数
+;;;   ・(v13で廃止) 「検索範囲」は前回選んだ値で起動する。値はAutoCAD環境変数
 ;;;     (getenv/setenv の QS_LastRange)に保存するので、図面を替えたり
 ;;;     AutoCADを再起動しても引き継がれる。適用(OK)したときだけ更新される。
 ;;;   ・ダイアログ内(検索欄を除く)を右クリックすると、「適用」ボタンを
@@ -103,13 +115,13 @@
 )
 
 ;; PowerShell側が書き出した結果ファイルを読み込み、
-;; (type layer color ltype blk txt range result errormsg) の
+;; (type layer color ltype blk txt angle result errormsg) の
 ;; 9要素リストを返す
 (defun qse-read-output (path / fn line cur
                             outType outLayer outColor outLtype outBlk outTxt outAngle
-                            outRange outResult outErr)
+                            outResult outErr)
   (setq outType '() outLayer '() outColor '() outLtype '() outBlk '() outTxt '() outAngle '()
-        outRange nil outResult nil outErr nil cur nil)
+        outResult nil outErr nil cur nil)
   (setq fn (open path "r"))
   (if fn
     (progn
@@ -122,7 +134,6 @@
           ((= line "###BLOCK###")    (setq cur 'BLOCK))
           ((= line "###TEXT###")     (setq cur 'TEXT))
           ((= line "###ANGLE###")    (setq cur 'ANGLE))
-          ((= line "###RANGE###")    (setq cur 'RANGE))
           ((= line "###RESULT###")   (setq cur 'RESULT))
           ((= line "###ERRORMSG###") (setq cur 'ERRORMSG))
           ((/= line "")
@@ -134,7 +145,6 @@
              ((eq cur 'BLOCK)    (setq outBlk    (cons line outBlk)))
              ((eq cur 'TEXT)     (setq outTxt    (cons line outTxt)))
              ((eq cur 'ANGLE)    (setq outAngle  (cons line outAngle)))
-             ((eq cur 'RANGE)    (setq outRange  line))
              ((eq cur 'RESULT)   (setq outResult line))
              ((eq cur 'ERRORMSG) (setq outErr    line))
            )
@@ -145,7 +155,7 @@
     )
   )
   (list (reverse outType) (reverse outLayer) (reverse outColor) (reverse outLtype)
-        (reverse outBlk) (reverse outTxt) (reverse outAngle) outRange outResult outErr)
+        (reverse outBlk) (reverse outTxt) (reverse outAngle) outResult outErr)
 )
 
 ;; ---------- 埋め込みPowerShell(WPF)スクリプトの書き出し ----------
@@ -207,7 +217,6 @@
   (write-line "        [string[]]$SelBlk," fn)
   (write-line "        [string[]]$SelTxt," fn)
   (write-line "        [string[]]$SelAngle," fn)
-  (write-line "        [string]$Range," fn)
   (write-line "        [string]$ErrorMsg" fn)
   (write-line "    )" fn)
   (write-line "    $lines = New-Object System.Collections.Generic.List[string]" fn)
@@ -225,8 +234,6 @@
   (write-line "    if ($SelTxt)   { foreach ($v in $SelTxt)   { $lines.Add($v) } }" fn)
   (write-line "    $lines.Add(\"###ANGLE###\")" fn)
   (write-line "    if ($SelAngle) { foreach ($v in $SelAngle) { $lines.Add($v) } }" fn)
-  (write-line "    $lines.Add(\"###RANGE###\")" fn)
-  (write-line "    if ($Range) { $lines.Add($Range) }" fn)
   (write-line "    $lines.Add(\"###RESULT###\")" fn)
   (write-line "    $lines.Add($Status)" fn)
   (write-line "    $lines.Add(\"###ERRORMSG###\")" fn)
@@ -439,7 +446,6 @@
   (write-line "                    <RowDefinition Height=\"Auto\"/>" fn)
   (write-line "                    <RowDefinition Height=\"Auto\"/>" fn)
   (write-line "                    <RowDefinition Height=\"Auto\"/>" fn)
-  (write-line "                    <RowDefinition Height=\"Auto\"/>" fn)
   (write-line "                </Grid.RowDefinitions>" fn)
   (write-line "" fn)
   (write-line "                <TextBlock Grid.Row=\"0\" Text=\"絞り込む項目を選択してください（Ctrl+クリックで複数選択可）\"" fn)
@@ -457,21 +463,7 @@
   (write-line "                    </Grid>" fn)
   (write-line "                </ScrollViewer>" fn)
   (write-line "" fn)
-  (write-line "                <Border Grid.Row=\"2\" Margin=\"0,3,0,0\" Padding=\"12,8\" Background=\"#F7F7F7\" CornerRadius=\"8\"" fn)
-  (write-line "                        BorderBrush=\"#E4E4E4\" BorderThickness=\"1\">" fn)
-  (write-line "                    <StackPanel Orientation=\"Horizontal\">" fn)
-  (write-line "                        <TextBlock Text=\"検索範囲:\" VerticalAlignment=\"Center\" Margin=\"0,0,16,0\"" fn)
-  (write-line "                                   FontWeight=\"Bold\" Foreground=\"#444444\" FontSize=\"12\"/>" fn)
-  (write-line "                        <RadioButton x:Name=\"RadioWindow\" Content=\"画面上で対象を選択\" GroupName=\"range\"" fn)
-  (write-line "                                     Margin=\"0,0,16,0\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
-  (write-line "                        <RadioButton x:Name=\"RadioPolygon\" Content=\"閉じたポリラインの内側を選択\" GroupName=\"range\"" fn)
-  (write-line "                                     Margin=\"0,0,16,0\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
-  (write-line "                        <RadioButton x:Name=\"RadioAll\" Content=\"図面全体から検索\" GroupName=\"range\"" fn)
-  (write-line "                                     IsChecked=\"True\" VerticalAlignment=\"Center\" FontSize=\"12\"/>" fn)
-  (write-line "                    </StackPanel>" fn)
-  (write-line "                </Border>" fn)
-  (write-line "" fn)
-  (write-line "                <Grid Grid.Row=\"3\" Margin=\"0,10,0,0\">" fn)
+  (write-line "                <Grid Grid.Row=\"2\" Margin=\"0,10,0,0\">" fn)
   (write-line "                    <Grid.ColumnDefinitions>" fn)
   (write-line "                        <ColumnDefinition Width=\"Auto\"/>" fn)
   (write-line "                        <ColumnDefinition Width=\"*\"/>" fn)
@@ -526,19 +518,6 @@
   (write-line "    $btnSelectAllGlobal = $window.FindName(\"BtnSelectAllGlobal\")" fn)
   (write-line "    $btnCancel  = $window.FindName(\"BtnCancel\")" fn)
   (write-line "    $btnApply   = $window.FindName(\"BtnApply\")" fn)
-  (write-line "    $radioWindow= $window.FindName(\"RadioWindow\")" fn)
-  (write-line "    $radioPolygon = $window.FindName(\"RadioPolygon\")" fn)
-  (write-line "    $radioAll   = $window.FindName(\"RadioAll\")" fn)
-  (write-line "" fn)
-  (write-line "    # 検索範囲は前回値で初期化する(LISP側が入力ファイルのRANGEセクションで渡す)" fn)
-  (write-line "    $rangeInit = 'all'" fn)
-  (write-line "    $rangeSec = Get-Section $data 'RANGE'" fn)
-  (write-line "    if ($rangeSec.Count -gt 0) { $rangeInit = [string]$rangeSec[0] }" fn)
-  (write-line "    switch ($rangeInit) {" fn)
-  (write-line "        'window'  { $radioWindow.IsChecked  = $true }" fn)
-  (write-line "        'polygon' { $radioPolygon.IsChecked = $true }" fn)
-  (write-line "        default   { $radioAll.IsChecked     = $true }" fn)
-  (write-line "    }" fn)
   (write-line "" fn)
   (write-line "    $expandOverlay = $window.FindName(\"ExpandOverlay\")" fn)
   (write-line "    $overlayGrid   = $window.FindName(\"OverlayGrid\")" fn)
@@ -686,10 +665,17 @@
   (write-line "                # マウスホイールでスクロールできなくなる。ここで具体的な高さを" fn)
   (write-line "                # 計算して与えることで、項目数が多いときにきちんと一覧内で" fn)
   (write-line "                # スクロールできるようにする" fn)
-  (write-line "                $chrome = 114" fn)
-  (write-line "                if ($HasSearch) { $chrome += 40 }" fn)
-  (write-line "                $listBox.Height = [Math]::Max(200, $MaxDialogHeight - $chrome)" fn)
+  (write-line "                # 展開前(オーバーレイが非表示のうち)に、表示できる領域の高さを控える。" fn)
+  (write-line "                # 一覧の高さを大きく取りすぎるとウィンドウが伸びて画面下へはみ出し、" fn)
+  (write-line "                # 一覧の最後の行が見切れてしまうため、この領域に収まる高さにする" fn)
+  (write-line "                $rowH = $Overlay.Parent.RowDefinitions[1].ActualHeight" fn)
+  (write-line "                $listBox.Height = 150" fn)
   (write-line "                [void]$OverlayGrid.Children.Add($listBox)" fn)
+  (write-line "                $Overlay.Visibility = \"Visible\"" fn)
+  (write-line "                $OverlayGrid.UpdateLayout()" fn)
+  (write-line "                $used = 30 + 8 + 4 + $headerGrid.ActualHeight + $headerGrid.Margin.Top + $headerGrid.Margin.Bottom" fn)
+  (write-line "                if ($HasSearch) { $used += $searchBox.ActualHeight + $searchBox.Margin.Top + $searchBox.Margin.Bottom }" fn)
+  (write-line "                $listBox.Height = [Math]::Max(120, $rowH - $used)" fn)
   (write-line "                $titleText.Text = \"[-] \" + $Title" fn)
   (write-line "                $Overlay.Visibility = \"Visible\"" fn)
   (write-line "                $listBox.Tag = \"expanded\"" fn)
@@ -745,7 +731,7 @@
   (write-line "" fn)
   (write-line "    $cardBlk = $null" fn)
   (write-line "    if ($blkList.Count -gt 0) {" fn)
-  (write-line "        $cardBlk = New-SectionCard -Title \"[5] ブロック名\" -Values $blkList -Displays $blkDisplays -HasSearch $false -AccentColor \"#1D8A99\" -Res $window.Resources -Overlay $expandOverlay -OverlayGrid $overlayGrid -MaxDialogHeight $window.MaxHeight" fn)
+  (write-line "        $cardBlk = New-SectionCard -Title \"[5] ブロック名\" -Values $blkList -Displays $blkDisplays -HasSearch $true -AccentColor \"#1D8A99\" -Res $window.Resources -Overlay $expandOverlay -OverlayGrid $overlayGrid -MaxDialogHeight $window.MaxHeight" fn)
   (write-line "        [void]$colRight.Children.Add($cardBlk.Card)" fn)
   (write-line "    }" fn)
   (write-line "" fn)
@@ -777,10 +763,6 @@
   (write-line "        $selBlk   = @(Get-TagValues $cardBlk)" fn)
   (write-line "        $selTxt   = @(Get-TagValues $cardTxt)" fn)
   (write-line "        $selAngle = @(Get-TagValues $cardAngle)" fn)
-  (write-line "        if ($radioAll.IsChecked) { $range = \"all\" }" fn)
-  (write-line "        elseif ($radioPolygon.IsChecked) { $range = \"polygon\" }" fn)
-  (write-line "        else { $range = \"window\" }" fn)
-  (write-line "" fn)
   (write-line "        Write-ResultFile -Path $OutputPath -Status $Status `" fn)
   (write-line "            -SelType  @(Get-TagValues $cardType) `" fn)
   (write-line "            -SelLayer @(Get-TagValues $cardLayer) `" fn)
@@ -789,7 +771,6 @@
   (write-line "            -SelBlk   $selBlk `" fn)
   (write-line "            -SelTxt   $selTxt `" fn)
   (write-line "            -SelAngle $selAngle `" fn)
-  (write-line "            -Range    $range `" fn)
   (write-line "            -ErrorMsg $null" fn)
   (write-line "        $script:written = $true" fn)
   (write-line "    }" fn)
@@ -820,7 +801,6 @@
   (write-line "        foreach ($c in @($cardType, $cardLayer, $cardColor, $cardLtype, $cardBlk, $cardTxt, $cardAngle)) {" fn)
   (write-line "            if ($c) { $c.ListBox.SelectedItems.Clear(); $c.State.Sel.Clear() }" fn)
   (write-line "        }" fn)
-  (write-line "        $radioAll.IsChecked = $true" fn)
   (write-line "    })" fn)
   (write-line "" fn)
   (write-line "    $btnSelectAllGlobal.Add_Click({" fn)
@@ -842,7 +822,7 @@
   (write-line "catch {" fn)
   (write-line "    Write-ResultFile -Path $OutputPath -Status \"ERROR\" `" fn)
   (write-line "        -SelType @() -SelLayer @() -SelColor @() -SelLtype @() -SelBlk @() -SelTxt @() -SelAngle @() `" fn)
-  (write-line "        -Range $null -ErrorMsg $_.Exception.Message" fn)
+  (write-line "        -ErrorMsg $_.Exception.Message" fn)
   (write-line "}" fn)
   (close fn)
 );; ---------- オブジェクトタイプ 日本語表示テーブル ----------
@@ -1089,6 +1069,53 @@
   )
 )
 
+;; ---------- 検索範囲の指定(v13: UIのラジオボタンを廃止しコマンドラインで指定) ----------
+;; 「適用」後のプロンプトで次のいずれかを行う。
+;;   ・Enter           : AutoCAD標準の「オブジェクトを選択:」(窓=青/交差=緑の標準表示。
+;;                       クリック・窓・交差などを繰り返し、Enterで確定)
+;;                       何も選ばずにEnterなら図面全体(現在の空間)から検索
+;;   ・P               : 閉じたポリラインを選び、その内側を選択
+;; 窓選択などの後にポリライン内側選択を追加する機能はない(選択したら確定)。
+;; ※ 標準の選択プロンプト内では P は「直前の選択」の意味になるため、
+;;    P は標準の選択に入る前のプロンプトで受け付ける。
+(defun qse-pick-scope-ss (filterList / k ssRes polyPts)
+  (initget "P")
+  (setq k
+    (getkword
+      "\n検索範囲 [P=閉じたポリラインの内側] <Enter=窓選択・クリック（何も選ばなければ図面全体）>: "
+    )
+  )
+  (cond
+    ;; P: 閉じたポリラインの内側
+    ((= k "P")
+     (setq polyPts (qse-pick-closed-polyline))
+     (if polyPts
+       (setq ssRes
+         (if filterList (ssget "WP" polyPts filterList) (ssget "WP" polyPts))
+       )
+     )
+    )
+    ;; Enter: AutoCAD標準の選択(窓/交差/クリックを繰り返し可能)
+    (T
+     (princ "\n対象を選択してください（窓選択・クリック。何も選ばずEnterで図面全体）: ")
+     (setq ssRes (if filterList (ssget filterList) (ssget)))
+     (if (null ssRes)
+       ;; 何も選ばずEnter: 図面全体(現在の空間のみ。モデル/現在のレイアウト)
+       (setq ssRes
+         (ssget "X"
+           (append filterList
+             (list (cons 410 (if (and (= (getvar "TILEMODE") 0) (= (getvar "CVPORT") 1))
+                               (getvar "CTAB")
+                               "Model")))
+           )
+         )
+       )
+     )
+    )
+  )
+  ssRes
+)
+
 (defun c:QS ( / ssBase i entData objType layerName colorVal ltypeVal blkName txtContent
                    typeList layerList colorList ltypeList blkList txtList
                    blkCountAlist txtCountAlist blkCountList txtCountList
@@ -1096,8 +1123,8 @@
                    attEnt attData attTxt
                    inFile outFile ps1File fn result
                    selTypes selLayers selColors selLtypes selBlks selTxts selAngles
-                   selRange selResult errMsg
-                   filterList ssFilter polyPts lastRange
+                   selResult errMsg
+                   filterList ssFilter
                    ent attOnly blkPat *error* )
   (vl-load-com)
 
@@ -1247,12 +1274,6 @@
       (setq outFile (vl-filename-mktemp "qse_out.txt"))
       (setq ps1File (vl-filename-mktemp "qse_ui.ps1"))
 
-      ;; 検索範囲の前回値を取得する(未設定・不正な値のときは "all")
-      (setq lastRange (getenv "QS_LastRange"))
-      (if (not (member lastRange '("window" "polygon" "all")))
-        (setq lastRange "all")
-      )
-
       (setq fn (open inFile "w"))
       (qse-write-section fn "TYPE"
         (mapcar '(lambda (v) (strcat v "|" (qse-type-label v))) typeList)
@@ -1266,7 +1287,6 @@
       (if txtList (qse-write-section fn "TEXTCOUNT" txtCountList))
       (if angleList (qse-write-section fn "ANGLE" angleList))
       (if angleList (qse-write-section fn "ANGLECOUNT" angleCountList))
-      (qse-write-section fn "RANGE" (list lastRange))
       (close fn)
 
       ;; 埋め込みPowerShellスクリプトを一時ファイルへ書き出す
@@ -1288,9 +1308,8 @@
           (setq selBlks   (nth 4 result))
           (setq selTxts   (nth 5 result))
           (setq selAngles (nth 6 result))
-          (setq selRange  (nth 7 result))
-          (setq selResult (nth 8 result))
-          (setq errMsg    (nth 9 result))
+          (setq selResult (nth 7 result))
+          (setq errMsg    (nth 8 result))
 
           (cond
             ((= selResult "ERROR")
@@ -1300,11 +1319,6 @@
              (princ "\n処理をキャンセルしました。")
             )
             (T
-             ;; 検索範囲を保存する(次回起動時の初期値になる)
-             (if (member selRange '("window" "polygon" "all"))
-               (setenv "QS_LastRange" selRange)
-             )
-
              ;; ---------- 5. ssgetフィルタの構築 ----------
              ;; 属性(ATTRIB)はssgetで直接選べないので、タイプ「属性」は
              ;; ブロック参照に置き換え、属性付きかどうかは後段で判定する
@@ -1330,43 +1344,13 @@
              ;; 文字列内容(属性値を含む)はssgetで判定できないので後段で行う
              (if selAngles (setq filterList (append filterList (qse-make-angle-filter selAngles))))
 
-             (cond
-               ((= selRange "all")
-                ;; 図面全体の検索は現在の空間(モデル/現在のレイアウト)に限る
-                (setq ssFilter
-                  (ssget "X"
-                    (append filterList
-                      (list (cons 410 (if (and (= (getvar "TILEMODE") 0) (= (getvar "CVPORT") 1))
-                                        (getvar "CTAB")
-                                        "Model")))
-                    )
-                  )
-                )
-               )
-               ((= selRange "polygon")
-                (setq polyPts (qse-pick-closed-polyline))
-                (if polyPts
-                  (if filterList
-                    (setq ssFilter (ssget "WP" polyPts filterList))
-                    (setq ssFilter (ssget "WP" polyPts))
-                  )
-                  (setq ssFilter nil)
-                )
-               )
-               ((= selRange "window")
-                (princ "\n対象のオブジェクトを選択してください: ")
-                (if filterList
-                  (setq ssFilter (ssget filterList))
-                  (setq ssFilter (ssget))
-                )
-               )
-             )
+             ;; 検索範囲はコマンドラインで指定する(窓選択 / P=ポリライン内 / Enter=図面全体)
+             (setq ssFilter (qse-pick-scope-ss filterList))
 
              ;; ロック・凍結されたレイヤーのオブジェクトは対象から除外する。
-             ;; 「画面上で対象を選択」「閉じたポリラインの内側」はAutoCAD標準の
-             ;; ピック動作により通常はこれらが選択候補に入らないが、
-             ;; 「図面全体から検索」(ssget "X")はロック・凍結を無視して
-             ;; ヒットするため、ここで検索範囲によらず統一して除外する。
+             ;; 窓選択・ポリライン内はAutoCAD標準のピック動作により通常は
+             ;; これらが選択候補に入らないが、Enterの「図面全体」(ssget "X")は
+             ;; ロック・凍結を無視してヒットするため、ここで統一して除外する。
              ;; あわせて、ssgetで判定できない条件(ブロック実効名・文字列内容・属性)もここで判定する
              (if ssFilter
                (progn
@@ -1404,5 +1388,5 @@
   )
   (princ)
 )
-(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v11:ワイルドカード文字/ダイナミックブロック/属性値の選択を修正・v10:ロック凍結レイヤー除外・[7]回転角度を追加・フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
+(princ "\n[QS] 読み込まれました。'QS' で実行できます。(単一ファイル/PowerShell-WPF UI版・v13:検索範囲をコマンドライン指定に変更(標準の窓選択・クリック/P=ポリライン内/選択なしEnter=図面全体)・v12:ブロック名の検索欄を追加・v11:ワイルドカード文字/ダイナミックブロック/属性値の選択を修正・v10:ロック凍結レイヤー除外・[7]回転角度を追加・フルスクリーン展開マウスホイール対応・フッター/ヘッダー領域縮小・右クリックで決定・UI拡大・文字サイズ12・検索範囲は前回値・単一項目表示修正)")
 (princ)
