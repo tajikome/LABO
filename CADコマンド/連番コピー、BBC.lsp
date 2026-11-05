@@ -1,4 +1,4 @@
-(defun c:BBC (/ *error* e p1 t1 p2 p_list ent_list last_e)
+(defun c:BBC (/ *error* e p1 t1 p2 p_list ent_list last_e ss pre txt_types)
   ;; --- エラー・安全終了処理 ---
   (defun *error* (m)
     (setvar "CMDECHO" 1)
@@ -9,7 +9,24 @@
   (setvar "CMDECHO" 0)
   
   ;; 1. コピー元と基点の選択
-  (if (and (setq e (car (entsel "\nコピー元の文字を選択: ")))
+  ;; 事前に文字が選択済みなら、それをコピー元にしてその続きの番号から開始
+  (setq txt_types '("TEXT" "MTEXT")
+        e nil
+        pre nil)
+  (if (and (setq ss (ssget "_I"))
+           (setq e (ssname ss 0))
+           (member (cdr (assoc 0 (entget e))) txt_types))
+    (progn
+      (setq pre T)
+      (vl-catch-all-apply 'sssetfirst '(nil nil)) ; 選択状態を解除
+    )
+    (setq e nil)
+  )
+  (if (not e)
+    (setq e (car (entsel "\nコピー元の文字を選択: ")))
+  )
+  (if (and e
+           (assoc 1 (entget e))
            (setq p1 (getpoint "\nコピーの基点を指定: ")))
     (progn
       (command "._UNDO" "_Begin")

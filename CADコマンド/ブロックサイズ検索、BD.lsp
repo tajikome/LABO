@@ -1,6 +1,7 @@
 ;;; ============================================================
 ;;; BD : ブロックのサイズ(幅・奥行き)を計測 / サイズ指定で検索
 ;;;  - 幅・奥行きを指定 → 図面全体(現在の空間)から該当ブロックを選択
+;;;    複数のブロック名にヒットした場合は番号付きで内訳を表示し、番号入力でそのブロックだけを選択
 ;;;  - 指定なし(両方Enter) → 検索範囲を指定(標準=図面全体)して寸法一覧を表示
 ;;;  - 対応図形 : LINE / LWPOLYLINE(円弧セグメント=バルジ対応) / CIRCLE / ARC
 ;;;  - 三角形(TRI150で描く 1辺150の閉じた3頂点ポリライン)は計測から除外
@@ -112,7 +113,7 @@
        (setq pt1 (cdr (assoc 10 ed)) pt2 (cdr (assoc 11 ed)))
        (setq bb (bld_add_pt bb (car pt1) (cadr pt1)))
        (setq bb (bld_add_pt bb (car pt2) (cadr pt2)))
-       ;; 長さ100の水平線・垂直線の判定(従来どおり)
+       ;; 長さ100の水平線(X方向)・垂直線(Y方向)の判定
        (setq dx (abs (- (car pt2) (car pt1))))
        (setq dy (abs (- (cadr pt2) (cadr pt1))))
        (if (and (< dy 0.001) (< (abs (- dx 100.0)) 0.001)) (setq has-x T))
@@ -162,8 +163,9 @@
     (progn
       (setq w (- (nth 2 bb) (nth 0 bb)))
       (setq h (- (nth 3 bb) (nth 1 bb)))
-      ;; 従来仕様: 長さ100の水平/垂直線があるブロックは奥行き-50
-      (if (or has-x has-y) (setq h (- h 50.0)))
+      ;; X方向に長さ100の線分がある場合は幅(X方向)から-50 / Y方向に長さ100の線分がある場合は奥行き(Y方向)から-50
+      (if has-x (setq w (- w 50.0)))
+      (if has-y (setq h (- h 50.0)))
       (list w h)
     )
     (list 0.0 0.0)
@@ -229,6 +231,63 @@
   )
 )
 
+;; --- 選択セットをブロック名ごとにグループ化 ((名前 図形1 図形2 ...) ...) ---
+(defun bld_group (sset / lst i e nm c)
+  (setq lst nil i 0)
+  (while (< i (sslength sset))
+    (setq e (ssname sset i))
+    (setq nm (cdr (assoc 2 (entget e))))
+    (if (setq c (assoc nm lst))
+      (setq lst (subst (append c (list e)) c lst))
+      (setq lst (append lst (list (list nm e))))
+    )
+    (setq i (1+ i))
+  )
+  lst
+)
+
+;; --- ヒットが複数のブロック名にまたがる場合、番号で1種類ずつ選択して確認 ---
+(defun bld_pick_by_name (sset / groups n k ans g ss e dim)
+  (setq groups (bld_group sset))
+  (if (> (length groups) 1)
+    (progn
+      (princ "\n\n=== 【ヒットしたブロック名の内訳】 ===")
+      (setq k 1)
+      (foreach g groups
+        (setq dim (bld_block_size (car g)))
+        (princ (strcat "\n  " (itoa k) ". " (car g)
+                       "  幅=" (rtos (car dim) 2 2)
+                       " / 奥行き=" (rtos (cadr dim) 2 2)
+                       "  (" (itoa (1- (length g))) "個)"))
+        (setq k (1+ k))
+      )
+      (setq n (length groups) ans T)
+      (while ans
+        (initget 6)
+        (setq ans (getint (strcat "\n番号を入力すると、そのブロックだけを選択します [1-" (itoa n)
+                                  "] <Enterで全ヒットを選択に戻して終了>: ")))
+        (cond
+          ((null ans)
+           (sssetfirst nil sset)
+           (princ "\n--- 全ヒットを選択状態に戻しました ---")
+          )
+          ((<= ans n)
+           (setq g (nth (1- ans) groups))
+           (setq ss (ssadd))
+           (foreach e (cdr g) (ssadd e ss))
+           (sssetfirst nil ss)
+           (setq dim (bld_block_size (car g)))
+           (princ (strcat "\n  → [" (car g) "] 幅=" (rtos (car dim) 2 2)
+                          " / 奥行き=" (rtos (cadr dim) 2 2)
+                          " の " (itoa (1- (length g))) " 個を選択中"))
+          )
+          (T (princ "\n範囲外の番号です。"))
+        )
+      )
+    )
+  )
+)
+
 ;;; ============================================================
 ;;; メインコマンド
 ;;; ============================================================
@@ -281,6 +340,8 @@
                   (princ "\n\n=== 【条件に一致したブロック】 ===")
                   (bld_print_list final-ss)
                   (princ (strcat "\n--- 指定された条件に一致する " (itoa (sslength final-ss)) " 個のブロックを選択しました ---"))
+                  ;; 複数のブロック名にヒットした場合は、番号で1種類ずつ確認できる
+                  (bld_pick_by_name final-ss)
                 )
                 (progn
                   (sssetfirst nil nil)

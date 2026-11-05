@@ -12,7 +12,7 @@
   )
 )
 
-(defun c:PD ( / wInput hInput modeInput ss i ent obj minpt maxpt pw ph matchSS layName layObj isVisible
+(defun c:ERED ( / wInput hInput modeInput ss i ent obj minpt maxpt pw ph matchSS layName layObj isVisible
                preSS sz sizeList found n )
   (vl-load-com)
 

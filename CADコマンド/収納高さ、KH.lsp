@@ -1,4 +1,4 @@
-(defun c:KH ( / type_choice lower upper has_ueoki ueoki has_kasagi kasagi ss ent eg txt)
+(defun c:KH ( / type_choice lower upper has_ueoki ueoki has_kasagi kasagi ss ent eg txt sel hist done h)
   ;; 1. 最初に作成タイプを選択（初期値はN:通常）
   (initget "N T M")
   (setq type_choice (getkword "\nタイプを選択 [通常(N)/天板付(T)/モジュラス(M)] : "))
@@ -113,17 +113,48 @@
     )
   )
 
-  ;; 3. 1回だけテキストをクリックして置換して終了
+  ;; 3. テキストを連続で置換（U:1つ戻す / Enter・Escで終了）
   (if txt
     (progn
-      (princ (strcat "\n置き換えるテキストをクリック [設定値: " txt "]:"))
-      (if (setq ss (ssget ":S" '((0 . "TEXT,MTEXT"))))
-        (progn
-          (setq ent (ssname ss 0))
-          (setq eg (entget ent))
-          (setq eg (subst (cons 1 txt) (assoc 1 eg) eg))
-          (entmod eg)
-          (entupd ent)
+      (princ (strcat "\n設定値: " txt))
+      (setq hist nil done nil)
+      (while (not done)
+        (initget "U")
+        (setvar "ERRNO" 0)
+        (setq sel (entsel "\n置き換えるテキストをクリック [戻す(U)/Enterで終了]: "))
+        (cond
+          ;; U: 直前の置換を元に戻す
+          ((= (type sel) 'STR)
+            (if hist
+              (progn
+                (setq h (car hist) hist (cdr hist))
+                (entmod (cdr h))
+                (entupd (car h))
+                (princ (strcat "\n1つ戻しました。（残り履歴: " (itoa (length hist)) "）"))
+              )
+              (princ "\n戻す履歴がありません。")
+            )
+          )
+          ;; テキストをクリック
+          ((and sel (listp sel))
+            (setq ent (car sel))
+            (setq eg (entget ent))
+            (if (member (cdr (assoc 0 eg)) '("TEXT" "MTEXT"))
+              (progn
+                (setq hist (cons (cons ent eg) hist))
+                (entmod (subst (cons 1 txt) (assoc 1 eg) eg))
+                (entupd ent)
+                (princ "\n置換しました。")
+              )
+              (princ "\nテキストではありません。")
+            )
+          )
+          ;; 何もない場所をクリック → やり直し
+          ((= (getvar "ERRNO") 7)
+            (princ "\n何もない場所です。もう一度クリックしてください。")
+          )
+          ;; Enter/Esc → 終了
+          (t (setq done T))
         )
       )
     )

@@ -1,6 +1,6 @@
-;;; ABK.lsp - 選択した図形を「近接するまとまり」ごとに自動でブロック化
+;;; AB.lsp - 選択した図形を「近接するまとまり」ごとに自動でブロック化
 ;;; 基点 = 各まとまりのバウンディングボックス左下
-;;; 使い方: APPLOAD で読み込み → ABK → 図形を窓選択 → 結合距離を入力
+;;; 使い方: APPLOAD で読み込み → AB → 図形を窓選択 → 結合距離を入力
 
 (vl-load-com)
 
@@ -45,7 +45,7 @@
   nm
 )
 
-(defun c:ABK (/ ss tol i en bb g groups rest changed cnt os ce nm ss2 pt)
+(defun c:AB (/ ss tol i en bb g groups rest changed cnt os ce nm ss2 pt)
   (setq ss (ssget))
   (if ss
     (progn
@@ -111,5 +111,5 @@
   (princ)
 )
 
-(princ "\nABK を読み込みました。")
+(princ "\nAB を読み込みました。")
 (princ)
