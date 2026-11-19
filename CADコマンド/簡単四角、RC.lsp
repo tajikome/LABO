@@ -1,9 +1,9 @@
 ;;; ============================================================
-;;; EREC コマンド - 四角形作成（モードなし・直感的）
+;;; RC コマンド - 四角形作成（モードなし・直感的）
 ;;;   基点指定 → X幅入力 → Y高さ入力
 ;;;   高さ入力で Enter のみ押すと、幅と同じ値（正方形）になる
 ;;; ============================================================
-(defun C:EREC (/ pt1 pt2 width height)
+(defun C:RC (/ pt1 pt2 width height)
   (setq pt1 (getpoint "\n基点を指定: "))
   (if (null pt1) (exit))
   (setq pt1 (list (car pt1) (cadr pt1) 0.0))
@@ -23,6 +23,6 @@
   (princ)
 )
 
-(princ "\n[EREC] ロード完了")
-(princ "\n  EREC : 基点指定 → X幅を入力 → Y高さを入力（Enterで幅と同じ値）")
+(princ "\n[RC] ロード完了")
+(princ "\n  RC : 基点指定 → X幅を入力 → Y高さを入力（Enterで幅と同じ値）")
 (princ)

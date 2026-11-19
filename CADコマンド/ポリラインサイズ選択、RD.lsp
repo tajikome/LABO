@@ -12,7 +12,7 @@
   )
 )
 
-(defun c:ERED ( / wInput hInput modeInput ss i ent obj minpt maxpt pw ph matchSS layName layObj isVisible
+(defun c:RD ( / wInput hInput modeInput ss i ent obj minpt maxpt pw ph matchSS layName layObj isVisible
                preSS sz sizeList found n )
   (vl-load-com)
 
@@ -21,34 +21,41 @@
   (if (null *QSP_LAST_H*) (setq *QSP_LAST_H* 500.0))
 
   ;; 選択済み（先行選択）のポリラインがあれば、そのサイズを表示
-  (setq preSS (ssget "_I" '((0 . "LWPOLYLINE,POLYLINE"))))
+  (setq preSS (ssget "_I"))
   (if preSS
     (progn
       (setq sizeList nil
+            n 0
             i 0)
       (repeat (sslength preSS)
-        (setq sz (PD:getsize (ssname preSS i)))
+        (setq ent (ssname preSS i))
         (setq i (1+ i))
-        (if sz
-          (if (setq found
-                     (vl-some
-                       '(lambda (x)
-                          (if (and (equal (car x) (car sz) 1e-4)
-                                   (equal (cadr x) (cadr sz) 1e-4))
-                            x))
-                       sizeList))
-            ;; 同サイズが既にあれば個数を加算
-            (setq sizeList
-                   (subst (list (car found) (cadr found) (1+ (caddr found)))
-                          found sizeList))
-            ;; 新しいサイズなら追加
-            (setq sizeList (append sizeList (list (list (car sz) (cadr sz) 1))))
+        (if (member (cdr (assoc 0 (entget ent))) '("LWPOLYLINE" "POLYLINE"))
+          (progn
+            (setq n (1+ n))
+            (setq sz (PD:getsize ent))
+            (if sz
+              (if (setq found
+                         (vl-some
+                           '(lambda (x)
+                              (if (and (equal (car x) (car sz) 1e-4)
+                                       (equal (cadr x) (cadr sz) 1e-4))
+                                x))
+                           sizeList))
+                ;; 同サイズが既にあれば個数を加算
+                (setq sizeList
+                       (subst (list (car found) (cadr found) (1+ (caddr found)))
+                              found sizeList))
+                ;; 新しいサイズなら追加
+                (setq sizeList (append sizeList (list (list (car sz) (cadr sz) 1))))
+              )
+            )
           )
         )
       )
       (if sizeList
         (progn
-          (princ (strcat "\n選択中のポリライン: " (itoa (sslength preSS)) " 個"))
+          (princ (strcat "\n選択中のポリライン: " (itoa n) " 個"))
           (foreach x sizeList
             (princ (strcat "\n  幅(X)=" (rtos (car x) 2 4)
                            "  高さ(Y)=" (rtos (cadr x) 2 4)
@@ -104,17 +111,14 @@
 
         (if isVisible
           (progn
-            ;; バウンディングボックス（最小・最大座標）を取得
-            (vla-GetBoundingBox obj 'minpt 'maxpt)
-            (setq minpt (vlax-safearray->list minpt)
-                  maxpt (vlax-safearray->list maxpt))
-            
-            ;; 幅(X)と高さ(Y)を算出 (許容誤差 1e-4)
-            (setq pw (abs (- (car maxpt) (car minpt))))
-            (setq ph (abs (- (cadr maxpt) (cadr minpt))))
+            ;; 幅(X)と高さ(Y)を算出
+            (setq sz (PD:getsize ent))
+            (setq pw (if sz (car sz)  nil))
+            (setq ph (if sz (cadr sz) nil))
 
             ;; 完全一致の判定
-            (if (and (equal pw *QSP_LAST_W* 1e-4)
+            (if (and pw ph
+                     (equal pw *QSP_LAST_W* 1e-4)
                      (equal ph *QSP_LAST_H* 1e-4))
               (ssadd ent matchSS)
             )
