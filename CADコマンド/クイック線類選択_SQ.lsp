@@ -478,8 +478,21 @@
   )
 )
 
+;; ---- 基準1個のとき: ダイアログ無しで条件を組み立てる (長さ一致 / 面積一致) ----
+(defun slx-quick-q (useLen lenL arL)
+  (list
+    (cons 'uLt nil) (cons 'sLt nil) (cons 'uLw nil) (cons 'sLw nil)
+    (cons 'uLen useLen) (cons 'lMode "MATCH") (cons 'sLen lenL) (cons 'tol *slx-tol*)
+    (cons 'lMin nil) (cons 'lMax nil)
+    (cons 'uAr (not useLen)) (cons 'arMode "MATCH") (cons 'sAr arL) (cons 'arTol *slx-artol*)
+    (cons 'arMin nil) (cons 'arMax nil)
+    (cons 'uAn nil) (cons 'aMode "MATCH") (cons 'sAn nil) (cons 'aTol *slx-atol*)
+    (cons 'aMin nil) (cons 'aMax nil)
+  )
+)
+
 ;; ---- メイン ----
-(defun slx-main-body (mode / uLt uLen uLw uAn uAr refSs info n ltL lenL lwL anL arL r q ss out i ent ed)
+(defun slx-main-body (mode / uLt uLen uLw uAn uAr refSs info n ltL lenL lwL anL arL r q ss out i ent ed one)
   (setq *slx-lc* nil)
   (if (null *slx-tol*)    (setq *slx-tol* 0.001))
   (if (null *slx-atol*)   (setq *slx-atol* 0.01))
@@ -517,7 +530,23 @@
      (if (= n 0)
        (princ "\n有効な基準オブジェクトがありません（ロック・フリーズ画層は除外されます）。")
        (progn
-         (setq r (slx-dialog n ltL lenL lwL anL arL uLt uLen uLw uAn uAr))
+         ;; 基準が1つだけ: UIを開かず、長さ(無ければ面積)の一致で自動選択 ※SQDなら常にUIを開く
+         (setq one nil q nil)
+         (if (and (= n 1) (/= mode "SQD"))
+           (cond
+             (lenL
+              (setq q (slx-quick-q T lenL arL) one T)
+              (princ (strcat "\n基準が1つのため、長さ " (rtos (cadr (car lenL)) 2 4)
+                             " (" (nth 3 (car lenL)) ") で選択します。")))
+             (arL
+              (setq q (slx-quick-q nil lenL arL) one T)
+              (princ (strcat "\n基準が1つのため、面積 " (rtos (cadr (car arL)) 2 4)
+                             " (" (nth 3 (car arL)) ") で選択します。")))
+           )
+         )
+         (setq r (if one
+                   (list (cons "OK" "1"))
+                   (slx-dialog n ltL lenL lwL anL arL uLt uLen uLw uAn uAr)))
          (cond
            ((null r)
             (princ "\nキャンセルされました。"))
@@ -526,8 +555,8 @@
            ((/= (cdr (assoc "OK" r)) "1")
             (princ "\nキャンセルされました。"))
            (T
-            (setq q (slx-parse-res r ltL lenL lwL anL arL))
-            (slx-save-last r q mode)
+            (if (not one) (setq q (slx-parse-res r ltL lenL lwL anL arL)))
+            (if (not one) (slx-save-last r q (if (= mode "SQD") "SQ" mode)))
             (setq ss (slx-get-target))
             (if (null ss)
               (princ "\n検索対象のオブジェクトがありません。")
@@ -579,6 +608,7 @@
 )
 
 (defun c:SQ  () (slx-main "SQ")  (princ))
+(defun c:SQD () (slx-main "SQD") (princ))
 
 ;; ---- 埋め込みPowerShell(WPF)スクリプト ----
 (defun slx-ps-lines ()
